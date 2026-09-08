@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: rakazo-shared-data
+  labels:
+    app.kubernetes.io/name: rakazo-shared-data
+    app.kubernetes.io/part-of: rakazo
+spec:
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 10Gi

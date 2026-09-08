@@ -1,0 +1,22 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rakazo-config
+  labels:
+    app.kubernetes.io/part-of: rakazo
+    app.kubernetes.io/component: config
+data:
+  NODE_ENV: production
+  POSTGRES_USER: rakazo
+  POSTGRES_DB: rakazo
+  DATA_DIR: /data
+  API_HOST: 0.0.0.0
+  API_URL: https://app.example.com
+  BETTER_AUTH_URL: https://app.example.com
+  WEB_ORIGIN: https://app.example.com
+  SANDBOX_PROVIDER: none
+  CLOUD_AGENT_PROVIDER: none
+  WAKEUP_DRIVER: graphile
+  AGENT_RUNTIME: pi
+  RAKAZO_HOST: app.example.com
+  API_PROXY_TARGET: http://api:3100
