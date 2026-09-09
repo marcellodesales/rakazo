@@ -1,0 +1,28 @@
+name: docker-multiarch-cicd-api
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, closed]
+  push:
+    branches: [main, 'copilot/*', 'feature/*']
+    tags: ['v*']
+
+concurrency:
+  group: docker-multiarch-cicd-api-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  docker-multiarch:
+    uses: ohanalabs-ai/github-platform/.github/workflows/docker-multiarch-cicd.yaml@main
+    permissions:
+      contents: write
+      packages: write
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+      pull-requests: write
+    with:
+      registry: ghcr.io
+      platforms: linux/amd64,linux/arm64
+      docker-compose-file-name: infra/compose/docker-compose.cicd.yml
+      docker-compose-target-service: api
+      push-attestations: 'false'
