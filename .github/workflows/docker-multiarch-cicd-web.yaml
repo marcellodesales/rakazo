@@ -12,7 +12,7 @@ concurrency:
 
 jobs:
   docker-multiarch:
-    uses: vionix-proj/github-platform/.github/workflows/docker-multiarch-cicd.yaml@main
+    uses: ohanalabs-ai/github-platform/.github/workflows/docker-multiarch-cicd.yaml@main
     permissions:
       contents: write
       packages: write

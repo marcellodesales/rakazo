@@ -57,7 +57,7 @@ kustomize edit set image ghcr.io/marcellodesales/rakazo/worker=ghcr.io/marcellod
 kustomize edit set image ghcr.io/marcellodesales/rakazo/web=ghcr.io/marcellodesales/rakazo/web@sha256:<digest>
 ```
 
-If the cluster cannot pull GHCR packages anonymously, add an `imagePullSecret` or make the packages readable to the cluster's identity. The reusable Vionix workflow lives outside this repository; access to `vionix-proj/github-platform` and package-write permission for this fork must be verified in GitHub before relying on those workflows for publishing.
+If the cluster cannot pull GHCR packages anonymously, add an `imagePullSecret` or make the packages readable to the cluster's identity. The reusable Vionix workflow lives outside this repository; access to `ohanalabs-ai/github-platform` and package-write permission for this fork must be verified in GitHub before relying on those workflows for publishing.
 
 ## Apply and operate
 

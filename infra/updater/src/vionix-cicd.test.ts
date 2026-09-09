@@ -81,7 +81,7 @@ describe("the Vionix multi-arch callers", () => {
       expect(workflow.on?.push?.tags).toEqual(["v*"]);
       const job = workflow.jobs?.["docker-multiarch"];
       expect(job?.uses).toBe(
-        "vionix-proj/github-platform/.github/workflows/docker-multiarch-cicd.yaml@main",
+        "ohanalabs-ai/github-platform/.github/workflows/docker-multiarch-cicd.yaml@main",
       );
       expect(job?.permissions).toEqual(expectedPermissions);
       expect(job?.with).toEqual({
