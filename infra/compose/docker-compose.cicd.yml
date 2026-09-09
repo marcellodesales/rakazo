@@ -1,0 +1,34 @@
+name: rakazo-cicd
+
+services:
+  api:
+    image: ghcr.io/marcellodesales/rakazo/api:edge
+    build:
+      context: ../..
+      dockerfile: infra/compose/Dockerfile
+      args:
+        GIT_SHA: ${GITHUB_SHA:-}
+
+  worker:
+    image: ghcr.io/marcellodesales/rakazo/worker:edge
+    build:
+      context: ../..
+      dockerfile: infra/compose/Dockerfile
+      args:
+        GIT_SHA: ${GITHUB_SHA:-}
+
+  web:
+    image: ghcr.io/marcellodesales/rakazo/web:edge
+    build:
+      context: ../..
+      dockerfile: infra/compose/Dockerfile
+      args:
+        GIT_SHA: ${GITHUB_SHA:-}
+
+  updater:
+    image: ghcr.io/marcellodesales/rakazo/updater:edge
+    build:
+      context: ../..
+      dockerfile: infra/updater/Dockerfile
+      args:
+        GIT_SHA: ${GITHUB_SHA:-}
