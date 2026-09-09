@@ -3,7 +3,6 @@ on:
   pull_request:
     types: [opened, synchronize, reopened, closed]
   push:
-    branches: [main, 'copilot/*', 'feature/*']
     tags: ['v*']
 
 concurrency:
@@ -11,7 +10,7 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  docker-multiarch:
+  docker-multiarch-web:
     uses: ohanalabs-ai/github-platform/.github/workflows/docker-multiarch-cicd.yaml@main
     permissions:
       contents: write
