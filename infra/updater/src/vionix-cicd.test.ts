@@ -25,10 +25,10 @@ const compose = parse(readFileSync(composeFile, "utf8")) as {
 };
 
 const workflowFiles = {
-  api: path.resolve(repoRoot, ".github/workflows/docker-multiarch-cicd-api.yml"),
-  worker: path.resolve(repoRoot, ".github/workflows/docker-multiarch-cicd-worker.yml"),
-  web: path.resolve(repoRoot, ".github/workflows/docker-multiarch-cicd-web.yml"),
-  updater: path.resolve(repoRoot, ".github/workflows/docker-multiarch-cicd-updater.yml"),
+  api: path.resolve(repoRoot, ".github/workflows/docker-multiarch-cicd-api.yaml"),
+  worker: path.resolve(repoRoot, ".github/workflows/docker-multiarch-cicd-worker.yaml"),
+  web: path.resolve(repoRoot, ".github/workflows/docker-multiarch-cicd-web.yaml"),
+  updater: path.resolve(repoRoot, ".github/workflows/docker-multiarch-cicd-updater.yaml"),
 } as const;
 
 const expectedPermissions = {
