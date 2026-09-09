@@ -3,7 +3,7 @@ on:
   pull_request:
     types: [opened, synchronize, reopened, closed]
   push:
-    branches: [main, 'copilot/*']
+    branches: [main, 'copilot/*', 'feature/*']
     tags: ['v*']
 
 concurrency:

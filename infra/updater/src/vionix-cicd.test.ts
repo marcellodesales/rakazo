@@ -77,7 +77,7 @@ describe("the Vionix multi-arch callers", () => {
         "reopened",
         "closed",
       ]);
-      expect(workflow.on?.push?.branches).toEqual(["main", "copilot/*"]);
+      expect(workflow.on?.push?.branches).toEqual(["main", "copilot/*", "feature/*"]);
       expect(workflow.on?.push?.tags).toEqual(["v*"]);
       const job = workflow.jobs?.["docker-multiarch"];
       expect(job?.uses).toBe(
