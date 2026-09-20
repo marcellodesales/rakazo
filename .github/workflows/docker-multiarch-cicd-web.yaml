@@ -1,4 +1,5 @@
-name: docker-multiarch-cicd-web
+name: "🐳 docker-multiarch-cicd-web"
+run-name: "🐳 docker-multiarch-cicd-web · ${{ github.event_name }} · ${{ github.ref_name }}"
 on:
   pull_request:
     types: [opened, synchronize, reopened, closed]
@@ -7,7 +8,7 @@ on:
     tags: ['v*']
 
 concurrency:
-  group: docker-multiarch-cicd-web-${{ github.ref }}
+  group: docker-multiarch-cicd-web-caller-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:

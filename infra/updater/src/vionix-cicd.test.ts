@@ -43,6 +43,8 @@ const expectedPermissions = {
 function loadWorkflow(file: string) {
   return parse(readFileSync(file, "utf8")) as {
     name?: string;
+    "run-name"?: string;
+    concurrency?: { group?: string; "cancel-in-progress"?: boolean };
     on?: { pull_request?: { types?: string[] }; push?: { branches?: string[]; tags?: string[] } };
     jobs?: { "docker-multiarch"?: WorkflowJob };
   };
@@ -70,7 +72,9 @@ describe("the Vionix multi-arch callers", () => {
     "wires the %s caller to the shared Vionix workflow",
     (service, file) => {
       const workflow = loadWorkflow(file);
-      expect(workflow.name).toBe(`docker-multiarch-cicd-${service}`);
+      expect(workflow.name).toBe(`🐳 docker-multiarch-cicd-${service}`);
+      expect(workflow["run-name"]).toBe(`🐳 docker-multiarch-cicd-${service} · \${{ github.event_name }} · \${{ github.ref_name }}`);
+      expect(workflow.concurrency?.group).toBe(`docker-multiarch-cicd-${service}-caller-\${{ github.ref }}`);
       expect(workflow.on?.pull_request?.types).toEqual([
         "opened",
         "synchronize",
