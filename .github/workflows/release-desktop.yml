@@ -1,4 +1,5 @@
-name: release-desktop
+name: "🚀 release-desktop"
+run-name: "🚀 release-desktop · ${{ github.event_name }} · ${{ github.ref_name }}"
 
 on:
   push:

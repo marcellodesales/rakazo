@@ -1,4 +1,5 @@
-name: publish-server-image
+name: "📦 publish-server-image"
+run-name: "📦 publish-server-image · ${{ github.event_name }} · ${{ github.ref_name }}"
 
 # Release tags publish the source-addressed image used by in-app updates plus the human-readable
 # semver tags. Main publishes `edge`. Pull requests build with a read-only token and an isolated

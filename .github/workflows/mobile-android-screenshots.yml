@@ -1,4 +1,5 @@
-name: mobile Android screenshots
+name: "🤖 mobile Android screenshots"
+run-name: "🤖 mobile Android screenshots · ${{ github.event_name }} · ${{ github.ref_name }}"
 
 on:
   workflow_dispatch:
