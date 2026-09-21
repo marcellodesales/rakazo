@@ -1,0 +1,110 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+  labels:
+    app.kubernetes.io/name: api
+    app.kubernetes.io/part-of: rakazo
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: api
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: api
+        app.kubernetes.io/part-of: rakazo
+    spec:
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        runAsNonRoot: true
+        fsGroup: 1000
+        fsGroupChangePolicy: OnRootMismatch
+      containers:
+        - name: api
+          image: ghcr.io/marcellodesales/rakazo/api:edge
+          imagePullPolicy: IfNotPresent
+          command:
+            - bash
+            - -lc
+            - pnpm --filter @rakazo/db exec prisma migrate deploy && pnpm --filter @rakazo/api start
+          ports:
+            - name: http
+              containerPort: 3100
+          envFrom:
+            - configMapRef:
+                name: rakazo-config
+            - configMapRef:
+                name: rakazo-optional-egress-proxy
+                optional: true
+            - secretRef:
+                name: rakazo-optional-providers
+                optional: true
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: rakazo-database
+                  key: DATABASE_URL
+            - name: REALTIME_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: rakazo-database
+                  key: REALTIME_DATABASE_URL
+            - name: BETTER_AUTH_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: rakazo-runtime-secrets
+                  key: BETTER_AUTH_SECRET
+            - name: ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: rakazo-runtime-secrets
+                  key: ENCRYPTION_KEY
+            - name: SCREEN_PROXY_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: rakazo-runtime-secrets
+                  key: SCREEN_PROXY_SECRET
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              memory: 1536Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          startupProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 60
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 6
+          volumeMounts:
+            - name: shared-data
+              mountPath: /data
+      volumes:
+        - name: shared-data
+          persistentVolumeClaim:
+            claimName: rakazo-shared-data

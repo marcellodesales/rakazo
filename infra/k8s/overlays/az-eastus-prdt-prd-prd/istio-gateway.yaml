@@ -1,0 +1,28 @@
+apiVersion: networking.istio.io/v1beta1
+kind: Gateway
+metadata:
+  name: rakazo-ingress
+  labels:
+    app.kubernetes.io/name: rakazo-ingress
+    app.kubernetes.io/part-of: rakazo
+spec:
+  selector:
+    istio: ingressgateway
+  servers:
+    - port:
+        number: 80
+        name: http
+        protocol: HTTP
+      hosts:
+        - app.example.com
+      tls:
+        httpsRedirect: true
+    - port:
+        number: 443
+        name: https
+        protocol: HTTPS
+      hosts:
+        - app.example.com
+      tls:
+        mode: SIMPLE
+        credentialName: rakazo-app-example-com-tls

@@ -1,0 +1,46 @@
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: rakazo
+  labels:
+    app.kubernetes.io/name: rakazo
+    app.kubernetes.io/part-of: rakazo
+spec:
+  hosts:
+    - app.example.com
+  gateways:
+    - rakazo-ingress
+  http:
+    - name: api-health
+      match:
+        - uri:
+            exact: /health
+      route:
+        - destination:
+            host: api
+            port:
+              number: 3100
+    - name: api-rest
+      match:
+        - uri:
+            prefix: /api
+      route:
+        - destination:
+            host: api
+            port:
+              number: 3100
+    - name: api-rpc
+      match:
+        - uri:
+            prefix: /rpc
+      route:
+        - destination:
+            host: api
+            port:
+              number: 3100
+    - name: web
+      route:
+        - destination:
+            host: web
+            port:
+              number: 5173

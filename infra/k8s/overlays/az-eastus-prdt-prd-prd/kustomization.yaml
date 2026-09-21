@@ -1,0 +1,33 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: rakazo-az-eastus-prdt-prd-prd
+resources:
+  - ../../base
+  - namespace.yaml
+  - istio-gateway.yaml
+  - istio-virtual-service.yaml
+patches:
+  - target:
+      kind: PersistentVolumeClaim
+      name: rakazo-shared-data
+    patch: |-
+      - op: add
+        path: /spec/storageClassName
+        value: azurefile-csi
+images:
+  - name: ghcr.io/marcellodesales/rakazo/api
+    newTag: edge
+  - name: ghcr.io/marcellodesales/rakazo/worker
+    newTag: edge
+  - name: ghcr.io/marcellodesales/rakazo/web
+    newTag: edge
+labels:
+  - includeSelectors: false
+    pairs:
+      app.kubernetes.io/managed-by: kustomize
+      rakazo.io/cloud: azure
+      rakazo.io/environment: prd
+      rakazo.io/product: rakazo
+      rakazo.io/region: eastus
+      rakazo.io/segment: prdt
+      rakazo.io/type: prd

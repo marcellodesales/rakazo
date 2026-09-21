@@ -1,0 +1,12 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - configmap.yaml
+  - shared-data-pvc.yaml
+  - postgres-service.yaml
+  - postgres-statefulset.yaml
+  - api-service.yaml
+  - api-deployment.yaml
+  - worker-deployment.yaml
+  - web-service.yaml
+  - web-deployment.yaml

@@ -1,0 +1,76 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worker
+  labels:
+    app.kubernetes.io/name: worker
+    app.kubernetes.io/part-of: rakazo
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: worker
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: worker
+        app.kubernetes.io/part-of: rakazo
+    spec:
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        runAsNonRoot: true
+        fsGroup: 1000
+        fsGroupChangePolicy: OnRootMismatch
+      containers:
+        - name: worker
+          image: ghcr.io/marcellodesales/rakazo/worker:edge
+          imagePullPolicy: IfNotPresent
+          command:
+            - pnpm
+            - --filter
+            - "@rakazo/worker"
+            - start
+          envFrom:
+            - configMapRef:
+                name: rakazo-config
+            - configMapRef:
+                name: rakazo-optional-egress-proxy
+                optional: true
+            - secretRef:
+                name: rakazo-optional-providers
+                optional: true
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: rakazo-database
+                  key: DATABASE_URL
+            - name: REALTIME_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: rakazo-database
+                  key: REALTIME_DATABASE_URL
+            - name: ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: rakazo-runtime-secrets
+                  key: ENCRYPTION_KEY
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              memory: 2Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: shared-data
+              mountPath: /data
+      volumes:
+        - name: shared-data
+          persistentVolumeClaim:
+            claimName: rakazo-shared-data

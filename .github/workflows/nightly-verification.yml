@@ -1,4 +1,5 @@
-name: nightly verification
+name: "🌙 nightly verification"
+run-name: "🌙 nightly verification · ${{ github.event_name }} · ${{ github.ref_name }}"
 
 on:
   schedule:

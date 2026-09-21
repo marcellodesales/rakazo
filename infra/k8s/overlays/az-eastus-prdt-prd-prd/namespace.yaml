@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: rakazo-az-eastus-prdt-prd-prd
+  labels:
+    istio-injection: enabled
+    app.kubernetes.io/part-of: rakazo

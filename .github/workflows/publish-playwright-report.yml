@@ -1,4 +1,5 @@
-name: publish Playwright report
+name: "📝 publish Playwright report"
+run-name: "📝 publish Playwright report · ${{ github.event_name }} · ${{ github.ref_name }}"
 
 on:
   workflow_run:

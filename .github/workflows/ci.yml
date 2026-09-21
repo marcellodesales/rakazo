@@ -1,4 +1,5 @@
-name: ci
+name: "🧪 ci"
+run-name: "🧪 ci · ${{ github.event_name }} · ${{ github.ref_name }}"
 on:
   push:
     branches: [main]
