@@ -19,21 +19,64 @@ test("custom connections persist reasoning support and bot thinking", async ({
   await page.getByLabel("OpenAI-compatible server URL").fill("http://127.0.0.1:8090/v1");
   await page.getByLabel("Model id").fill("arbitrary-model");
   await expect(page.getByRole("checkbox", { name: "Supports thinking" })).toBeHidden();
+  await expect(page.getByRole("checkbox", { name: "Supports images" })).toBeHidden();
   await page.getByText("Advanced", { exact: true }).click();
   await page.getByRole("checkbox", { name: "Supports thinking" }).check();
+  await page.getByRole("combobox", { name: "Reasoning effort", exact: true }).selectOption("low");
+  await page.getByLabel("Maximum output tokens").fill("8192");
+  await page.getByLabel("Context limit").fill("65536");
+  await page.getByRole("checkbox", { name: "Supports images" }).check();
+  await page.getByLabel("Maximum images per request").fill("1");
   await captureScreenshot(page, testInfo, "openai-compatible-thinking-connection");
   await page.getByRole("button", { name: "Save", exact: true }).click();
   await expect(page.getByText("Saved.", { exact: true })).toBeVisible();
-  const credentials = await rpc<Array<{ modelId?: string; reasoning?: boolean }>>(
-    page,
-    "models/credentials",
-    {},
-  );
+  const credentials = await rpc<
+    Array<{
+      modelId?: string;
+      reasoning?: boolean;
+      thinkingLevel?: string | null;
+      maxTokens?: number;
+      contextWindow?: number;
+      supportsImages?: boolean;
+      maxImagesPerPrompt?: number;
+    }>
+  >(page, "models/credentials", {});
   expect(credentials.find((entry) => entry.modelId === "arbitrary-model")?.reasoning).toBe(true);
+  expect(credentials.find((entry) => entry.modelId === "arbitrary-model")?.thinkingLevel).toBe(
+    "low",
+  );
+  expect(credentials.find((entry) => entry.modelId === "arbitrary-model")?.maxTokens).toBe(8192);
+  expect(credentials.find((entry) => entry.modelId === "arbitrary-model")?.contextWindow).toBe(
+    65536,
+  );
+  expect(credentials.find((entry) => entry.modelId === "arbitrary-model")?.supportsImages).toBe(
+    true,
+  );
+  expect(credentials.find((entry) => entry.modelId === "arbitrary-model")?.maxImagesPerPrompt).toBe(
+    1,
+  );
   await page.reload();
   await openUserSettings(page, "models");
   await page.getByText("Advanced", { exact: true }).click();
   await expect(page.getByRole("checkbox", { name: "Supports thinking" })).toBeChecked();
+  await expect(page.getByRole("combobox", { name: "Reasoning effort", exact: true })).toHaveValue(
+    "low",
+  );
+  await expect(page.getByLabel("Maximum output tokens")).toHaveValue("8192");
+  await expect(page.getByLabel("Context limit")).toHaveValue("65536");
+  await expect(page.getByRole("checkbox", { name: "Supports images" })).toBeChecked();
+  await expect(page.getByLabel("Maximum images per request")).toHaveValue("1");
+  await page.getByLabel("Maximum images per request").fill("");
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(page.getByText("Saved.", { exact: true })).toBeVisible();
+  const clearedCredentials = await rpc<Array<{ modelId?: string; maxImagesPerPrompt?: number }>>(
+    page,
+    "models/credentials",
+    {},
+  );
+  expect(
+    clearedCredentials.find((entry) => entry.modelId === "arbitrary-model")?.maxImagesPerPrompt,
+  ).toBeUndefined();
   await page.getByRole("button", { name: "Close model settings" }).click();
   await page.locator("main").getByRole("button", { name: "Chief", exact: true }).click();
   const settings = page.getByTestId("bot-settings");
@@ -186,7 +229,9 @@ test("connects, lists, and uses an OpenAI-compatible endpoint", async ({ page },
   }
 });
 
-test("model settings connect, replace, and cancel provider authentication", async ({ page }) => {
+test("model settings connect, replace, and cancel provider authentication", async ({
+  page,
+}, testInfo) => {
   const stamp = Date.now();
   const userName = `Models ${stamp}`;
   await signup(page, `models-${stamp}@rakazo.test`, "password12", userName);
@@ -202,13 +247,65 @@ test("model settings connect, replace, and cancel provider authentication", asyn
   const apiKeyInput = page.getByLabel("API key");
   await expect(apiKeyInput).toHaveAttribute("autocomplete", "new-password");
   await apiKeyInput.fill("fake-scripted-key-one");
+  await page.getByText("Advanced", { exact: true }).click();
+  await page.getByLabel("Maximum output tokens").fill("8192");
+  await captureScreenshot(page, testInfo, "builtin-provider-max-tokens");
   await page.getByRole("button", { name: "Connect API key" }).click();
   await expect(page.getByText(/Connected and using Scripted runtime/)).toBeVisible();
+  const connected = await rpc<Array<{ provider: string; maxTokens?: number }>>(
+    page,
+    "models/credentials",
+    {},
+  );
+  expect(connected.find((entry) => entry.provider === "scripted")?.maxTokens).toBe(8192);
+  await page.getByText("Advanced", { exact: true }).click();
+  await page.getByLabel("Maximum output tokens").fill("16384");
+  await page.getByRole("button", { name: "Save limits", exact: true }).click();
+  await expect(page.getByText("Saved.", { exact: true })).toBeVisible();
+  const updated = await rpc<Array<{ provider: string; maxTokens?: number }>>(
+    page,
+    "models/credentials",
+    {},
+  );
+  expect(updated.find((entry) => entry.provider === "scripted")?.maxTokens).toBe(16384);
+  await page.reload();
+  await openUserSettings(page, "models");
+  await expect(page.getByRole("combobox", { name: "Model" })).toHaveText(/Scripted runtime/);
+  await page.getByText("Advanced", { exact: true }).click();
+  await expect(page.getByLabel("Maximum output tokens")).toHaveValue("16384");
+
+  // Connected providers get their own section with the saved model inline;
+  // searching flattens back to one ranked list.
+  await providerSearch.fill("");
+  await expect(page.getByText("Connected", { exact: true })).toBeVisible();
+  await expect(page.getByText("All providers", { exact: true })).toBeVisible();
+  const scriptedRow = page.getByRole("button", { name: /^Scripted/ });
+  await expect(scriptedRow).toContainText("Scripted runtime");
+  await providerSearch.fill("scripted");
+  await expect(page.getByText("All providers", { exact: true })).toBeHidden();
+  await expect(page.getByRole("button", { name: /Scripted/ })).toContainText("Connected");
+  await page.getByRole("button", { name: /Scripted/ }).click();
 
   await page.getByLabel("Replace API key").fill("fake-scripted-key-two");
   await page.getByRole("button", { name: "Replace API key" }).click();
   await expect(page.getByText(/Connected and using Scripted runtime/)).toBeVisible();
 
+  const codexCredential = {
+    id: "cred-codex",
+    provider: "openai-codex",
+    label: "ChatGPT Plus/Pro",
+    hasKey: false,
+    isDefault: false,
+    modelId: "gpt-6-luna",
+  };
+  let oauthReady = false;
+  let oauthFinished = false;
+  await page.route("**/rpc/models/credentials", async (route) => {
+    const response = await route.fetch();
+    const body = (await response.json()) as { json: unknown[] };
+    if (oauthFinished) body.json.push(codexCredential);
+    await route.fulfill({ response, body: JSON.stringify(body) });
+  });
   await page.route("**/rpc/models/beginOAuth", async (route) => {
     await route.fulfill({
       contentType: "application/json",
@@ -227,7 +324,14 @@ test("model settings connect, replace, and cancel provider authentication", asyn
   await page.route("**/rpc/models/completeOAuth", async (route) => {
     await route.fulfill({
       contentType: "application/json",
-      body: JSON.stringify({ json: { status: "pending" } }),
+      body: JSON.stringify({ json: { status: oauthReady ? "ready" : "pending" } }),
+    });
+  });
+  await page.route("**/rpc/models/finishOAuth", async (route) => {
+    oauthFinished = true;
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({ json: codexCredential }),
     });
   });
   await page.evaluate(() => {
@@ -237,6 +341,7 @@ test("model settings connect, replace, and cancel provider authentication", asyn
   page.on("request", (request) => {
     if (request.url().includes("/rpc/models/finishOAuth")) finishRequests += 1;
   });
+  await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
 
   await providerSearch.fill("openai-codex");
   await page
@@ -244,7 +349,27 @@ test("model settings connect, replace, and cancel provider authentication", asyn
     .first()
     .click();
   await page.getByRole("button", { name: /Sign in with ChatGPT Plus\/Pro/ }).click();
-  await expect(page.getByText("Waiting for sign-in…")).toBeVisible();
+
+  // The popup is blocked (window.open returned null): the card still carries the
+  // code, a copy button, the expiry, and a way to abandon the attempt.
+  await expect(page.getByText("TEST-CODE")).toBeVisible();
+  await expect(page.getByRole("link", { name: "example.com/device" })).toBeVisible();
+  await expect(page.getByText(/code expires in about 15 minutes/)).toBeVisible();
+  await captureScreenshot(page, testInfo, "oauth-device-code-card");
+  await page.getByRole("button", { name: "Copy", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Copied", exact: true })).toBeVisible();
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe("TEST-CODE");
+
+  const cancelledByButton = page.waitForRequest((request) =>
+    request.url().includes("/rpc/models/cancelOAuth"),
+  );
+  await page.getByRole("button", { name: "Cancel", exact: true }).click();
+  await cancelledByButton;
+  await expect(page.getByText("TEST-CODE")).toBeHidden();
+
+  // A canceled attempt leaves sign-in reusable.
+  await page.getByRole("button", { name: /Sign in with ChatGPT Plus\/Pro/ }).click();
+  await expect(page.getByText("TEST-CODE")).toBeVisible();
 
   const cancelled = page.waitForRequest((request) =>
     request.url().includes("/rpc/models/cancelOAuth"),
@@ -255,5 +380,90 @@ test("model settings connect, replace, and cancel provider authentication", asyn
   expect(finishRequests).toBe(0);
   await page.getByLabel("Replace API key").fill("fake-scripted-key-three");
   await expect(page.getByRole("button", { name: "Replace API key" })).toBeEnabled();
-  await expect(page.getByText("Waiting for sign-in…")).toBeHidden();
+  await expect(page.getByText("TEST-CODE")).toBeHidden();
+
+  // A finished sign-in relabels the action so re-clicking reads as a reconnect.
+  oauthReady = true;
+  await providerSearch.fill("openai-codex");
+  await page
+    .getByRole("button", { name: /ChatGPT Plus\/Pro/ })
+    .first()
+    .click();
+  await page.getByRole("button", { name: /Sign in with ChatGPT Plus\/Pro/ }).click();
+  await expect(page.getByText(/Connected and using/)).toBeVisible();
+  await expect(page.getByRole("button", { name: "Sign in again", exact: true })).toBeVisible();
+
+  // Disconnect removes the credential and its Connected marker.
+  await providerSearch.fill("scripted");
+  await page.getByRole("button", { name: /Scripted/ }).click();
+  await page.getByRole("button", { name: "Disconnect", exact: true }).click();
+  const confirmDisconnect = page.getByRole("alertdialog");
+  await expect(
+    confirmDisconnect.getByRole("heading", { name: "Disconnect Scripted?" }),
+  ).toBeVisible();
+  await confirmDisconnect.getByRole("button", { name: "Disconnect", exact: true }).click();
+  await expect(page.getByText(/Disconnected Scripted/)).toBeVisible();
+  const afterDisconnect = await rpc<Array<{ provider: string }>>(page, "models/credentials", {});
+  expect(afterDisconnect.some((entry) => entry.provider === "scripted")).toBe(false);
+  await expect(page.getByRole("button", { name: /Scripted/ })).not.toContainText("Connected");
+});
+
+test("catalog models keep a space default thinking level per saved model", async ({
+  page,
+}, testInfo) => {
+  const stamp = Date.now();
+  await signup(page, `catalog-thinking-${stamp}@rakazo.test`, "password12", `Thinking ${stamp}`);
+  await completeOnboarding(page);
+
+  await openUserSettings(page, "models");
+  const providerSearch = page.getByPlaceholder("Search providers");
+
+  // A non-reasoning provider never shows the control.
+  await providerSearch.fill("scripted");
+  await page.getByRole("button", { name: /Scripted/ }).click();
+  await expect(page.getByRole("combobox", { name: "Thinking" })).toBeHidden();
+
+  await providerSearch.fill("anthropic");
+  await page.getByRole("button", { name: /^Anthropic / }).click();
+  await page.getByLabel("API key").fill("fake-anthropic-key");
+  await page.getByRole("button", { name: "Connect API key" }).click();
+  await expect(page.getByText(/Connected and using/)).toBeVisible();
+
+  const thinking = page.getByRole("combobox", { name: "Thinking", exact: true });
+  await expect(thinking).toBeVisible();
+  await expect(thinking).toHaveValue("");
+  await thinking.selectOption("high");
+  await captureScreenshot(page, testInfo, "catalog-model-thinking");
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(page.getByText(/Now using/)).toBeVisible();
+  // The Active model banner surfaces the effective effort while the model can think.
+  await expect(page.getByText("Thinking: High", { exact: true })).toBeVisible();
+
+  const credentials = await rpc<Array<{ provider: string; thinkingLevel?: string | null }>>(
+    page,
+    "models/credentials",
+    {},
+  );
+  expect(credentials.find((entry) => entry.provider === "anthropic")?.thinkingLevel).toBe("high");
+
+  // The level persists across reloads while the same model stays selected.
+  await page.reload();
+  await openUserSettings(page, "models");
+  await providerSearch.fill("anthropic");
+  await page.getByRole("button", { name: /^Anthropic / }).click();
+  await expect(page.getByRole("combobox", { name: "Thinking", exact: true })).toHaveValue("high");
+
+  // The stored level is bound to the saved model: staging another model resets the
+  // staged level, and saving the new model clears the old level instead of leaking it.
+  await page.getByRole("combobox", { name: "Model", exact: true }).click();
+  await page.getByRole("option", { name: "Claude Opus 4.8", exact: true }).click();
+  await expect(page.getByRole("combobox", { name: "Thinking", exact: true })).toHaveValue("");
+  await page.getByRole("button", { name: "Use this model", exact: true }).click();
+  await expect(page.getByText(/Now using/)).toBeVisible();
+  const updated = await rpc<Array<{ provider: string; thinkingLevel?: string | null }>>(
+    page,
+    "models/credentials",
+    {},
+  );
+  expect(updated.find((entry) => entry.provider === "anthropic")?.thinkingLevel).toBeUndefined();
 });

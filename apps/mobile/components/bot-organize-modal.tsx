@@ -1,5 +1,15 @@
 import { useState } from "react";
-import { Modal, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import {
+  KeyboardAvoidingView,
+  Modal,
+  Platform,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
+} from "react-native";
 import type { MobileBot, MobileBotSection } from "../lib/api";
 import { useI18n } from "../lib/i18n";
 import { native, useThemedStyles } from "../lib/native";
@@ -17,6 +27,7 @@ export function BotOrganizeModal({
   onClose,
   onUpdate,
   onCreateSection,
+  onRenameSection,
 }: {
   bot: Pick<MobileBot, "name" | "pinned" | "sectionId"> &
     Partial<Pick<MobileBot, "notifyOnFinish">>;
@@ -24,10 +35,12 @@ export function BotOrganizeModal({
   onClose: () => void;
   onUpdate: (update: BotOrganizationUpdate) => Promise<void>;
   onCreateSection: (name: string) => Promise<void>;
+  onRenameSection: (sectionId: string, name: string) => Promise<void>;
 }) {
   const styles = useThemedStyles(createBotOrganizeStyles);
   const { t } = useI18n();
-  const [creating, setCreating] = useState(false);
+  const currentSection = sections.find((section) => section.id === bot.sectionId) ?? null;
+  const [mode, setMode] = useState<"idle" | "create" | "rename">("idle");
   const [name, setName] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -45,9 +58,25 @@ export function BotOrganizeModal({
     }
   }
 
+  function startCreate() {
+    setMode("create");
+    setName("");
+    setError(null);
+  }
+
+  function startRename() {
+    if (!currentSection) return;
+    setMode("rename");
+    setName(currentSection.name);
+    setError(null);
+  }
+
   return (
     <Modal transparent animationType="fade" onRequestClose={onClose}>
-      <View style={styles.overlay}>
+      <KeyboardAvoidingView
+        behavior={Platform.OS === "ios" ? "padding" : undefined}
+        style={styles.overlay}
+      >
         <Pressable
           accessibilityLabel={t("Close chat organization")}
           style={StyleSheet.absoluteFill}
@@ -105,7 +134,7 @@ export function BotOrganizeModal({
               onPress={() => void save(() => onUpdate({ sectionId: null }))}
             />
           </ScrollView>
-          {creating ? (
+          {mode === "create" || mode === "rename" ? (
             <View style={styles.newSectionRow}>
               <TextInput
                 autoFocus
@@ -118,30 +147,57 @@ export function BotOrganizeModal({
               />
               <Pressable
                 accessibilityRole="button"
-                accessibilityLabel={t("Create section")}
-                disabled={saving || !name.trim()}
-                onPress={() => void save(() => onCreateSection(name.trim()))}
+                accessibilityLabel={
+                  mode === "rename" ? t("Save section name") : t("Create section")
+                }
+                disabled={
+                  saving ||
+                  !name.trim() ||
+                  (mode === "rename" && name.trim() === currentSection?.name)
+                }
+                onPress={() => {
+                  const trimmed = name.trim();
+                  if (mode === "rename" && currentSection) {
+                    void save(() => onRenameSection(currentSection.id, trimmed));
+                    return;
+                  }
+                  void save(() => onCreateSection(trimmed));
+                }}
                 style={styles.newSectionSubmit}
               >
-                <Text style={styles.newSectionSubmitLabel}>{t("Create")}</Text>
+                <Text style={styles.newSectionSubmitLabel}>
+                  {mode === "rename" ? t("Save") : t("Create")}
+                </Text>
               </Pressable>
             </View>
           ) : (
-            <Pressable
-              disabled={saving}
-              onPress={() => setCreating(true)}
-              style={({ pressed }) => [styles.action, pressed && styles.pressed]}
-            >
-              <NativeSymbol ios="folder.badge.plus" android="folder-outline" size={18} />
-              <Text style={styles.actionLabel}>{t("New section")}</Text>
-            </Pressable>
+            <>
+              <Pressable
+                disabled={saving}
+                onPress={startCreate}
+                style={({ pressed }) => [styles.action, pressed && styles.pressed]}
+              >
+                <NativeSymbol ios="folder.badge.plus" android="folder-outline" size={18} />
+                <Text style={styles.actionLabel}>{t("New section")}</Text>
+              </Pressable>
+              {currentSection ? (
+                <Pressable
+                  disabled={saving}
+                  onPress={startRename}
+                  style={({ pressed }) => [styles.action, pressed && styles.pressed]}
+                >
+                  <NativeSymbol ios="pencil" android="pencil-outline" size={18} />
+                  <Text style={styles.actionLabel}>{t("Rename section")}</Text>
+                </Pressable>
+              ) : null}
+            </>
           )}
           {error ? <Text style={styles.error}>{error}</Text> : null}
           <Pressable onPress={onClose} style={styles.cancel}>
             <Text style={styles.cancelLabel}>{t("Cancel")}</Text>
           </Pressable>
         </View>
-      </View>
+      </KeyboardAvoidingView>
     </Modal>
   );
 }
@@ -184,6 +240,7 @@ function createBotOrganizeStyles() {
     },
     sheet: {
       maxHeight: "82%",
+      flexShrink: 1,
       borderTopLeftRadius: 22,
       borderTopRightRadius: 22,
       backgroundColor: native.fillPressed,
@@ -224,6 +281,7 @@ function createBotOrganizeStyles() {
     },
     sectionOptions: {
       maxHeight: 230,
+      flexShrink: 1,
     },
     sectionOption: {
       minHeight: 44,

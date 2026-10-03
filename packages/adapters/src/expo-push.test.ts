@@ -103,6 +103,20 @@ describe("expo push", () => {
       },
     );
     expect(fetchMock).not.toHaveBeenCalled();
+    await expect(push.hasPushRecipient("missing")).resolves.toBe(false);
+    await expect(
+      push.deliver(
+        { kind: "completion", title: "done", body: "ok", botId: "b", threadId: "t" },
+        {
+          operationId: "n",
+          traceId: "n",
+          spaceId: "w",
+          userId: "missing",
+          signal: new AbortController().signal,
+        },
+      ),
+    ).resolves.toBe("undeliverable");
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("posts to Expo when a token is registered", async () => {

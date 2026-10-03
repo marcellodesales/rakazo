@@ -99,9 +99,22 @@ export class ExpoPushProvider implements NotificationProvider {
     };
   }
 
+  async hasPushRecipient(userId: string): Promise<boolean> {
+    return Boolean(await loadPushToken(this.dataDir, userId));
+  }
+
   async send(message: NotificationMessage, context: AdapterContext): Promise<void> {
+    await this.deliver(message, context);
+  }
+
+  /**
+   * Posts the push when a token is registered. `undeliverable` means this user
+   * has no token, which is not an Expo acceptance — callers must not record it
+   * as a successful reminder.
+   */
+  async deliver(message: NotificationMessage, context: AdapterContext): Promise<ExpoPushDelivery> {
     const token = await loadPushToken(this.dataDir, context.userId);
-    if (!token) return;
+    if (!token) return "undeliverable";
     const signal = combineSignals(context.signal, AbortSignal.timeout(EXPO_PUSH_TIMEOUT_MS));
     let response: Response;
     try {
@@ -127,11 +140,13 @@ export class ExpoPushProvider implements NotificationProvider {
       throw new Error("Expo push returned an invalid response.");
     }
     const failure = expoPushErrorMessage(body, response.status);
-    if (!failure) return;
+    if (!failure) return "delivered";
     getLogger().error(failure);
     throw new Error(failure);
   }
 }
+
+export type ExpoPushDelivery = "delivered" | "undeliverable";
 
 async function readExpoPushBody(response: Response, signal: AbortSignal): Promise<unknown> {
   const declared = Number(response.headers.get("content-length") ?? 0);

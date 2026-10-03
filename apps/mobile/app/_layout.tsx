@@ -1,25 +1,39 @@
 import { DarkTheme, Stack, ThemeProvider } from "expo-router";
+import * as ScreenOrientation from "expo-screen-orientation";
+import * as SplashScreen from "expo-splash-screen";
 import { StatusBar } from "expo-status-bar";
 import { useEffect, useMemo, useState } from "react";
 import { View } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { KeyboardProvider } from "react-native-keyboard-controller";
 import { AvatarStyleProvider } from "../components/avatar-style";
+import { CallCard } from "../components/CallCard";
 import { ComputerUpdateProgress } from "../components/computer-update-progress";
 import { currentApiBase, loadApiBase, loadSessionToken, selectedSpaceId } from "../lib/api";
 import { loadAppearancePreference, mobileTokens } from "../lib/appearance";
+import { loadAvatarStyle } from "../lib/avatar-style";
 import { bootstrapI18n, useI18n } from "../lib/i18n";
 import {
   configureForegroundNotifications,
   resumeLiveNotifications,
 } from "../lib/live-notifications";
 import { native, useResolvedAppearance } from "../lib/native";
+import { loadResponseStreamingPreference } from "../lib/response-streaming";
 
 configureForegroundNotifications();
+// Keep the splash up until the saved appearance applies, so the first frame isn't in the OS scheme.
+void SplashScreen.preventAutoHideAsync().catch(() => undefined);
 
 export default function Layout() {
+  useEffect(() => {
+    // The app is portrait-only; the computer screen unlocks rotation while it is open.
+    void ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP).catch(
+      () => undefined,
+    );
+  }, []);
   const { t } = useI18n();
   const [ready, setReady] = useState(false);
+  const [appearanceReady, setAppearanceReady] = useState(false);
   const resolved = useResolvedAppearance();
   const navigationTheme = useMemo(() => {
     const tokens = mobileTokens();
@@ -39,8 +53,17 @@ export default function Layout() {
   }, [resolved]);
 
   useEffect(() => {
+    if (appearanceReady && ready) void SplashScreen.hideAsync().catch(() => undefined);
+  }, [appearanceReady, ready]);
+
+  useEffect(() => {
     void Promise.all([
-      Promise.all([loadApiBase(), loadAppearancePreference()])
+      Promise.all([
+        loadApiBase(),
+        loadAppearancePreference().finally(() => setAppearanceReady(true)),
+        loadResponseStreamingPreference(),
+        loadAvatarStyle(),
+      ])
         .then(async () =>
           resumeLiveNotifications(
             currentApiBase(),
@@ -75,6 +98,7 @@ export default function Layout() {
                   name="integration-setup"
                   options={{ title: t("Server integrations") }}
                 />
+                <Stack.Screen name="ai-data-sharing" options={{ title: "AI data sharing" }} />
                 <Stack.Screen name="account" options={{ title: t("Account") }} />
                 <Stack.Screen
                   name="change-password"
@@ -122,6 +146,7 @@ export default function Layout() {
                 <Stack.Screen name="computer" options={{ title: t("Computer") }} />
               </Stack>
               <ComputerUpdateProgress />
+              <CallCard />
             </ThemeProvider>
           </AvatarStyleProvider>
         ) : (

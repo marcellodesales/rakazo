@@ -10,9 +10,10 @@ import { userVisibleMessages } from "@rakazo/core";
 import type { PrismaClient } from "./client.js";
 import { type ComputerMode, ensureComputerRecord, parseComputerMode } from "./computers.js";
 import { createThreadMessageInTransaction } from "./messages.js";
-import { IsolationError } from "./scope.js";
+import { BotSectionNameConflictError, IsolationError } from "./scope.js";
 import { lockSpaceForContentCreation } from "./spaces.js";
 import { activeRunSelection, previewFromBlocks } from "./thread-listing.js";
+import { withTransactionRetry } from "./transaction-retry.js";
 
 /** Newest messages loaded for sidebar preview; enough to skip a short peer-run tail. */
 const SIDEBAR_PREVIEW_MESSAGE_WINDOW = 16;
@@ -135,6 +136,7 @@ export function createRepos(prisma: PrismaClient) {
         pinned: true,
         sectionId: true,
         updatedAt: true,
+        parentBotId: true,
         thread: {
           select: {
             unread: true,
@@ -161,6 +163,7 @@ export function createRepos(prisma: PrismaClient) {
         pinned: bot.pinned,
         sectionId: bot.sectionId,
         unread: bot.thread.unread,
+        parentBotId: bot.parentBotId,
         preview: previewFromBlocks(bot.thread.messages[0]?.blocks),
         status: bot.runs[0]?.status ?? "idle",
         updatedAt: bot.updatedAt.toISOString(),
@@ -240,6 +243,42 @@ export function createRepos(prisma: PrismaClient) {
           updatedAt: section.updatedAt.toISOString(),
         } satisfies BotSection;
       });
+    },
+
+    async updateBotSection(actor: Actor, input: { sectionId: string; name: string }) {
+      const existing = await prisma.botSection.findFirst({
+        where: {
+          id: input.sectionId,
+          spaceId: actor.spaceId,
+          userId: actor.userId,
+        },
+      });
+      if (!existing) throw new IsolationError();
+      if (existing.name === input.name) {
+        return {
+          id: existing.id,
+          name: existing.name,
+          position: existing.position,
+          createdAt: existing.createdAt.toISOString(),
+          updatedAt: existing.updatedAt.toISOString(),
+        } satisfies BotSection;
+      }
+      try {
+        const section = await prisma.botSection.update({
+          where: { id: existing.id },
+          data: { name: input.name },
+        });
+        return {
+          id: section.id,
+          name: section.name,
+          position: section.position,
+          createdAt: section.createdAt.toISOString(),
+          updatedAt: section.updatedAt.toISOString(),
+        } satisfies BotSection;
+      } catch (error) {
+        if (isUniqueViolation(error)) throw new BotSectionNameConflictError();
+        throw error;
+      }
     },
 
     async listBots(actor: Actor, options: { archived?: boolean } = {}): Promise<Bot[]> {
@@ -535,18 +574,25 @@ export function createRepos(prisma: PrismaClient) {
         include: { computer: true },
       });
       if (!bot?.computer) throw new IsolationError();
-      const computer = await ensureComputerRecord(prisma, {
-        mode,
-        spaceId: actor.spaceId,
-        userId: actor.userId,
-        botId,
-        kind: bot.computer.kind,
-      });
-      const updated = await prisma.bot.update({
-        where: { id: botId },
-        data: { computerId: computer.id },
-        include: { thread: true, computer: true },
-      });
+      const kind = bot.computer.kind;
+      // Keep ensure + bot link in one transaction so a capped quota lock covers
+      // both steps (a computer row alone does not count until a live bot refs it).
+      const updated = await withTransactionRetry(() =>
+        prisma.$transaction(async (tx) => {
+          const computer = await ensureComputerRecord(tx, {
+            mode,
+            spaceId: actor.spaceId,
+            userId: actor.userId,
+            botId,
+            kind,
+          });
+          return tx.bot.update({
+            where: { id: botId },
+            data: { computerId: computer.id },
+            include: { thread: true, computer: true },
+          });
+        }),
+      );
       return mapBot(updated);
     },
   };

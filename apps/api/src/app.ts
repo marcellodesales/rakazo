@@ -11,12 +11,17 @@ import type {
   SandboxProvider,
   TransactionalEmailProvider,
 } from "@rakazo/adapter-kit";
+import type {
+  ComposioProvider,
+  ConnectorRegistry,
+  DestinationEmulator,
+  RemoteConnectorDependencies,
+} from "@rakazo/adapters";
 import {
   applyMessagingOutboundStatus,
   ChatSdkMessagingSurface,
+  CodexCatalogCache,
   ComposioConnector,
-  type ComposioProvider,
-  type ConnectorRegistry,
   createBackgroundJobHandlers,
   createCloudAgentConnection,
   createConnectorStack,
@@ -27,7 +32,6 @@ import {
   createRunSandbox,
   createRunSecretWriter,
   createWebProvider,
-  type DestinationEmulator,
   destroyBot,
   EmailEmulator,
   EncryptedSecretStore,
@@ -52,37 +56,41 @@ import {
   pipedreamConfigFromEnv,
   piSessionsRoot,
   pushTokenPath,
-  type RemoteConnectorDependencies,
   reconcileCloudAgents,
   reconcileComputerUpdates,
   removePiUserSessions,
   ScriptedAgentRuntime,
   SmtpEmailProvider,
   SpaceMemoryProviderResolver,
+  sandboxProviderOptionsFromEnv,
   toTeamChatInbound,
 } from "@rakazo/adapters";
-import { blockedAuthPaths, createAuth } from "@rakazo/auth";
-import { signupPolicyFromEnv } from "@rakazo/core";
+import { createAuth, isBlockedAuthPath, loopbackTwinOrigins } from "@rakazo/auth";
+import { signupAllowlistBootUpdate, signupPolicyFromEnv } from "@rakazo/core";
+import type { Pool, PrismaClient } from "@rakazo/db";
 import {
   createDb,
+  createPool,
   createThreadEvents,
-  type PrismaClient,
+  parsePositiveInteger,
   provisionMessagingIdentity,
   requireMembership,
 } from "@rakazo/db";
+import type { Logger } from "@rakazo/logging";
 import {
   createServiceLogger,
   enrichLogContext,
   getLogger,
   installLogger,
-  type Logger,
   SERVICE_NAMES,
 } from "@rakazo/logging";
 import { requestLogging } from "@rakazo/logging/hono";
 import { MarkdownMemoryStore } from "@rakazo/memory";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
-import { type AppEnv, loadEnv } from "./env.js";
+import type { AppEnv } from "./env.js";
+import { loadEnv } from "./env.js";
+import { healthRoutes } from "./health.js";
 import { mountLocalSettings } from "./local-settings.js";
 import {
   createMessagingInboundHandler,
@@ -92,6 +100,7 @@ import {
 import { mountMessagingWebhookRoutes } from "./messaging-webhook.js";
 import { mountApiRequestBodyLimits } from "./request-body-limit.js";
 import { createRouter } from "./router.js";
+import { mountScreenTarget } from "./screen-proxy.js";
 import { isDeferredReservationLost, TeamChatBridge } from "./team-chat-bridge.js";
 import { ModelTeamChatEngagementJudge } from "./team-chat-judge.js";
 import {
@@ -102,6 +111,19 @@ import {
 } from "./team-chat-startup.js";
 import { mountVoiceHttpRoutes } from "./voice.js";
 import { mountWebhookHttpRoutes } from "./webhook.js";
+
+/**
+ * Native clients always send the app scheme, including in Expo Go, so no
+ * exp:// origin is trusted: it would accept any Expo host as a redirect target.
+ * The loopback entries are the Expo web dev server.
+ */
+export const MOBILE_AUTH_ORIGINS = [
+  "rakazo://",
+  "http://localhost:8081",
+  "http://127.0.0.1:8081",
+  "http://localhost:19006",
+  "http://127.0.0.1:19006",
+];
 
 export interface AppHandles {
   app: Hono;
@@ -148,9 +170,11 @@ export async function createApp(
   installLogger(logger);
   const created = prismaOverride
     ? { prisma: prismaOverride, pool: undefined }
-    : createDb(env.databaseUrl);
+    : createDb(env.databaseUrl, {
+        poolMax: parsePositiveInteger(process.env.DB_POOL_MAX, 4),
+        applicationName: "rakazo-api",
+      });
   const { prisma } = created;
-  created.pool?.on("error", () => undefined);
   const realtime =
     realtimeOverride ??
     (created.pool
@@ -177,7 +201,8 @@ export async function createApp(
   if (!deploymentSettings.signupPolicyInitialized) {
     // Older versions created this row with schema defaults even though auth
     // still enforced the environment policy. Copy that effective policy once
-    // so upgrades preserve behavior before Settings becomes authoritative.
+    // so upgrades preserve behavior. Later starts reapply a non-empty
+    // SIGNUP_ALLOWLIST; a blank value leaves the stored list alone.
     await prisma.deploymentSettings.updateMany({
       where: { id: "default", signupPolicyInitialized: false },
       data: {
@@ -186,14 +211,46 @@ export async function createApp(
         signupPolicyInitialized: true,
       },
     });
+  } else {
+    const signupAllowlist = signupAllowlistBootUpdate(
+      deploymentSettings.signupAllowlist,
+      env.signupAllowlist,
+      true,
+    );
+    if (signupAllowlist !== null) {
+      await prisma.deploymentSettings.update({
+        where: { id: "default" },
+        data: { signupAllowlist },
+      });
+      logger.info("applied SIGNUP_ALLOWLIST from the environment");
+    }
   }
 
   const jobKind = env.wakeupDriver;
   const inMemoryJobs = jobKind === "memory" ? new InMemoryJobQueue() : undefined;
-  const jobs = inMemoryJobs ?? new GraphileJobPublisher(env.databaseUrl);
+  // prismaOverride skips createDb, so there is no shared pool. The previous
+  // GraphileJobPublisher(databaseUrl) path opened its own connections; keep a
+  // bounded pool for that override path instead of passing undefined.
+  let ownedJobPool: Pool | undefined;
+  if (!inMemoryJobs && !created.pool) {
+    ownedJobPool = createPool(env.databaseUrl, {
+      poolMax: parsePositiveInteger(process.env.DB_POOL_MAX, 4),
+      applicationName: "rakazo-api-jobs",
+    });
+  }
+  const jobPool = created.pool ?? ownedJobPool;
+  const jobs = inMemoryJobs
+    ? inMemoryJobs
+    : new GraphileJobPublisher(
+        jobPool ??
+          (() => {
+            throw new Error("Graphile job publisher requires a PostgreSQL pool");
+          })(),
+      );
   const sandbox: SandboxProvider =
     sandboxOverride ??
     createRunSandbox(env.sandboxProvider, {
+      ...sandboxProviderOptionsFromEnv(),
       supervisorUrl: env.sandboxSupervisorUrl,
       supervisorToken: env.sandboxSupervisorToken,
       e2bApiKey: env.e2bApiKey,
@@ -205,7 +262,12 @@ export async function createApp(
       dataDir: env.dataDir,
       prisma,
     });
-  const mcpOAuth = new McpOAuthBroker(prisma, secrets, remoteConnectors);
+  const mcpOAuth = new McpOAuthBroker(
+    prisma,
+    secrets,
+    remoteConnectors,
+    env.mcpAllowPrivateEndpoint,
+  );
   const memoryProviders = new SpaceMemoryProviderResolver(prisma, secrets);
   const oauthLogins = new PiOAuthLogins();
   const home = new LocalAgentHomeStore(env.dataDir);
@@ -218,6 +280,8 @@ export async function createApp(
       stdioEnabled: env.mcpStdioEnabled,
       allowedCommands: env.mcpStdioAllowedCommands,
       network: remoteConnectors,
+      events,
+      allowPrivateEndpoint: env.mcpAllowPrivateEndpoint,
     },
     mcpOAuth,
   );
@@ -254,7 +318,12 @@ export async function createApp(
     (env.smtpUrl
       ? new SmtpEmailProvider({ url: env.smtpUrl, from: env.emailFrom ?? "" })
       : localEmailEmulator);
-  const installed = new InstalledConnectorProvider(prisma, secrets, remoteConnectors);
+  const installed = new InstalledConnectorProvider(
+    prisma,
+    secrets,
+    remoteConnectors,
+    env.mcpAllowPrivateEndpoint,
+  );
   const integrationSettings = new IntegrationProviderSettings(prisma, secrets, env.encryptionKey, {
     composio:
       composioOverride ??
@@ -288,15 +357,7 @@ export async function createApp(
     signupAllowlist: env.signupAllowlist,
     email,
     onEmailError: (error) => getLogger().error("transactional email delivery failed", error),
-    extraOrigins: [
-      "rakazo://",
-      "exp://",
-      "exp://*",
-      "http://localhost:8081",
-      "http://127.0.0.1:8081",
-      "http://localhost:19006",
-      "http://127.0.0.1:19006",
-    ],
+    extraOrigins: MOBILE_AUTH_ORIGINS,
     beforeDeleteUser: async (userId) => {
       const bots = await prisma.bot.findMany({
         where: { userId },
@@ -330,9 +391,13 @@ export async function createApp(
     CLOUD_AGENT_SPACE_ID: env.cloudAgentSpaceId,
   });
   const shutdown = new AbortController();
+  // One cache serves models.list, selection validation, and run-time model
+  // resolution alike, so a list call warms the run path in this process.
+  const codexCatalog = new CodexCatalogCache();
   const executor = createRunExecutor({
     prisma,
     runtime,
+    codexCatalog,
     sandbox,
     memory,
     memoryProviders,
@@ -355,9 +420,11 @@ export async function createApp(
       env.deploymentModelKey ?? "",
       env.composioApiKey ?? "",
       env.cursorApiKey ?? "",
+      process.env.TYPESAFE_API_KEY ?? "",
     ].filter(Boolean),
     secretStore: secrets,
     secretHttp: remoteConnectors,
+    mcpAllowPrivateEndpoint: env.mcpAllowPrivateEndpoint,
     deploymentModelKey: env.deploymentModelKey,
     dataDir: env.dataDir,
     notifications,
@@ -391,6 +458,8 @@ export async function createApp(
     ? createJobReconciler({
         prisma,
         jobs,
+        events,
+        notifications,
         reconcileCloudAgents: () => reconcileCloudAgents({ prisma, jobs, cloudAgent }),
         reconcileComputerUpdates: () => reconcileComputerUpdates({ prisma, jobs }),
       })
@@ -398,6 +467,8 @@ export async function createApp(
   reconciler?.start();
 
   const router = createRouter({
+    cloudAgent,
+    codexCatalog,
     prisma,
     events,
     auth,
@@ -424,8 +495,11 @@ export async function createApp(
       agentRuntime: env.agentRuntime,
       defaultProvider: env.defaultProvider,
       defaultModel: env.defaultModel,
+      teamChatJudgeProvider: env.teamChatJudgeProvider,
+      teamChatJudgeModel: env.teamChatJudgeModel,
       deploymentModelKey: env.deploymentModelKey,
       webOrigin: env.webOrigin,
+      privacyPolicyUrl: env.privacyPolicyUrl,
       screenProxySecret: env.screenProxySecret,
       sandboxProvider: env.sandboxProvider,
       gitSha: env.gitSha,
@@ -433,6 +507,7 @@ export async function createApp(
       updaterToken: env.updaterToken,
       imageTag: env.imageTag,
       integrationsCatalogUrl: env.integrationsCatalogUrl,
+      mcpAllowPrivateEndpoint: env.mcpAllowPrivateEndpoint,
     },
   });
   const rpc = new RPCHandler(router, {
@@ -466,9 +541,10 @@ export async function createApp(
     );
   }
   mountApiRequestBodyLimits(app);
+  mountScreenTarget(app, prisma, env.screenProxySecret);
   app.on(["GET", "POST"], "/api/auth/*", async (c) => {
     const path = new URL(c.req.url).pathname.replace("/api/auth", "");
-    if (blockedAuthPaths.some((blocked) => path.startsWith(blocked))) {
+    if (isBlockedAuthPath(path)) {
       return c.json({ error: "Not available in version 1" }, 404);
     }
     return auth.handler(c.req.raw);
@@ -770,9 +846,9 @@ export async function createApp(
     })();
   }
 
-  app.get("/health", (c) =>
-    c.json({
-      ok: true,
+  app.route(
+    "/",
+    healthRoutes(() => ({
       runtime: env.agentRuntime,
       sandbox: env.sandboxProvider,
       composio: Boolean(stack.composio),
@@ -782,7 +858,7 @@ export async function createApp(
       jobs: jobKind,
       realtime: realtime.describe().id,
       revision: env.gitSha ?? null,
-    }),
+    })),
   );
 
   return {
@@ -824,25 +900,45 @@ export async function createApp(
       await mcp.close();
       await prisma.$disconnect().catch(() => undefined);
       await created.pool?.end().catch(() => undefined);
+      await ownedJobPool?.end().catch(() => undefined);
       await logger.flush({ timeoutMs: 2_000 });
     },
   };
 }
 
-function isTrustedOrigin(origin: string, env: AppEnv) {
+export function isTrustedOrigin(
+  origin: string,
+  env: Pick<AppEnv, "webOrigin" | "apiUrl" | "authUrl">,
+) {
   if (!origin) return true;
-  if (origin === env.webOrigin || origin === env.apiUrl || origin === env.authUrl) return true;
-  if (origin.startsWith("rakazo://") || origin.startsWith("exp://")) return true;
-  try {
-    const host = new URL(origin).hostname;
-    return isLoopbackHost(host);
-  } catch {
-    return false;
-  }
+  if (origin.startsWith("rakazo://")) return true;
+  const allowed = new Set(
+    [env.webOrigin, env.apiUrl, env.authUrl, ...MOBILE_AUTH_ORIGINS].flatMap(originVariants),
+  );
+  return allowed.has(origin);
 }
 
 function isLoopbackHost(host: string): boolean {
   return host === "localhost" || host === "127.0.0.1" || host === "::1" || host === "[::1]";
+}
+
+function originVariants(origin: string): string[] {
+  if (!origin || origin === "rakazo://") return [];
+  const variants = [origin, ...loopbackTwinOrigins(origin)];
+  try {
+    const url = new URL(origin);
+    if (url.protocol === "http:" || url.protocol === "https:") {
+      variants.push(url.origin);
+    }
+    if (url.hostname === "localhost" || url.hostname === "127.0.0.1") {
+      const v6 = new URL(origin);
+      v6.hostname = "[::1]";
+      variants.push(v6.origin);
+    }
+  } catch {
+    return variants;
+  }
+  return variants;
 }
 
 function sessionHeaders(request: Request) {

@@ -20,6 +20,7 @@ export interface AppEnv {
   authSecret: string;
   authUrl: string;
   webOrigin: string;
+  privacyPolicyUrl?: string;
   apiUrl: string;
   apiHost: string;
   signupsEnabled: string | undefined;
@@ -82,6 +83,8 @@ export interface AppEnv {
   wakeupDriver: string;
   mcpStdioEnabled: boolean;
   mcpStdioAllowedCommands: string[];
+  /** Deployment-owner escape for remote MCP on RFC1918 / Docker-network hosts. */
+  mcpAllowPrivateEndpoint: boolean;
   port: number;
   gitSha: string | undefined;
   /** Private Compose control-network URL for the opt-in updater sidecar. */
@@ -107,6 +110,7 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): AppEnv {
     authSecret,
     authUrl: source.BETTER_AUTH_URL ?? source.WEB_ORIGIN ?? "http://127.0.0.1:5173",
     webOrigin: source.WEB_ORIGIN ?? "http://127.0.0.1:5173",
+    privacyPolicyUrl: optional(source.PRIVACY_POLICY_URL),
     apiUrl: source.API_URL ?? "http://127.0.0.1:3100",
     apiHost: source.API_HOST ?? "127.0.0.1",
     signupsEnabled: source.SIGNUPS_ENABLED,
@@ -170,6 +174,7 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): AppEnv {
       .split(",")
       .map((value) => value.trim())
       .filter(Boolean),
+    mcpAllowPrivateEndpoint: source.MCP_ALLOW_PRIVATE_ENDPOINT === "true",
     port: Number(source.API_PORT ?? 3100),
     gitSha: optional(source.GIT_SHA) ?? optional(source.RAKAZO_GIT_SHA),
     updaterUrl,

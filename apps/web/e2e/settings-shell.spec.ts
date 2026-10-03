@@ -26,7 +26,19 @@ test("settings shell is two-pane and deep-links Models Memory Voice Usage", asyn
   );
   await expect(settings.getByRole("heading", { name: "General", exact: true })).toBeVisible();
   await expect(settings.getByRole("heading", { name: "Account", exact: true })).toBeVisible();
+  await expect(settings.getByRole("heading", { name: "Replies", exact: true })).toHaveCount(0);
+  await settings.getByTestId("advanced-settings").locator("summary").click();
+  const streamReplies = settings.getByTestId("response-streaming-toggle");
+  await expect(streamReplies).toBeVisible();
+  await expect(streamReplies).not.toBeChecked();
+  await expect(settings.getByText("Stream replies", { exact: true })).toBeVisible();
+  await streamReplies.scrollIntoViewIfNeeded();
   await captureScreenshot(page, testInfo, "settings-shell-general");
+  await streamReplies.click();
+  await expect(streamReplies).toBeChecked();
+  await expect
+    .poll(() => page.evaluate(() => window.localStorage.getItem("rakazo.responseStreaming")))
+    .toBe("on");
 
   await settings.getByTestId("settings-nav-models").click();
   await expect(settings).toHaveAttribute("data-settings-section", "models");
@@ -38,7 +50,13 @@ test("settings shell is two-pane and deep-links Models Memory Voice Usage", asyn
   await expect(settings).toHaveAttribute("data-settings-section", "memory");
   await expect(settings.getByRole("heading", { name: "Memory", exact: true })).toBeVisible();
   await expect(settings.getByTestId("memory-settings")).toBeVisible();
-  await captureScreenshot(page, testInfo, "settings-shell-memory");
+  const memory = settings.getByTestId("memory-settings");
+  await expect(memory.getByLabel("Provider")).toBeVisible();
+  await memory.getByLabel("Provider").selectOption("serenity");
+  await expect(memory.getByLabel("MCP endpoint")).toBeVisible();
+  await expect(memory.getByLabel("Bearer token")).toBeVisible();
+  await expect(memory.getByRole("button", { name: "Recall only" })).toBeVisible();
+  await captureScreenshot(page, testInfo, "settings-shell-memory-serenity");
 
   await settings.getByTestId("settings-nav-voice").click();
   await expect(settings).toHaveAttribute("data-settings-section", "voice");

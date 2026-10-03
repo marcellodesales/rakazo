@@ -5,6 +5,9 @@ import type {
   AgentRuntimeCapabilities,
   AgentRuntimeEvent,
   ArtifactPut,
+  AutoReviewCapabilities,
+  AutoReviewRequest,
+  AutoReviewResult,
   BackgroundJob,
   BackgroundJobHandlers,
   BrowserActRequest,
@@ -54,6 +57,7 @@ import type {
   ScreenSession,
   SecretRecord,
   SemanticMemoryCapabilities,
+  SemanticMemoryForgetRequest,
   SemanticMemoryPurgeHistoryRequest,
   SemanticMemoryRecallRequest,
   SemanticMemoryResponse,
@@ -61,6 +65,7 @@ import type {
   SemanticMemorySaveRequest,
   SnapshotRef,
   SpeechClip,
+  TerminalRequest,
   TransactionalEmail,
   VoiceCapabilities,
   VoiceInfo,
@@ -110,6 +115,12 @@ export interface SandboxProvider {
     request: ScreenRequest,
     context: AdapterContext,
   ): Promise<ScreenSession>;
+  /** Open a user shell bound to the current control lease; it closes when control is released. */
+  connectTerminal?(
+    computer: ComputerRef,
+    request: TerminalRequest,
+    context: AdapterContext,
+  ): Promise<{ url: string }>;
   setScreenControl?(
     computer: ComputerRef,
     interactive: boolean,
@@ -218,6 +229,11 @@ export interface SemanticMemoryProvider {
     request: SemanticMemoryPurgeHistoryRequest,
     context: AdapterContext,
   ): Promise<SemanticMemoryResponse>;
+  /** Optional durable forget. Providers without a forget verb omit this. */
+  forget?(
+    request: SemanticMemoryForgetRequest,
+    context: AdapterContext,
+  ): Promise<SemanticMemoryResponse<{ id: string; expired: boolean; reason: string | null }>>;
 }
 
 export interface AgentRuntime {
@@ -424,4 +440,14 @@ export interface CloudAgentProvider {
     context: AdapterContext,
   ): Promise<CloudAgentHandle>;
   cancel(id: string, context: AdapterContext, runId?: string): Promise<CloudAgentSnapshot>;
+}
+
+/**
+ * Provider-neutral "is this tool call safe to auto-allow?" check. First used by
+ * Auto Review; swap vendors without changing approval UX (pass → run, ask → card).
+ * Core runs with none configured and falls back to the LLM adapter.
+ */
+export interface AutoReviewProvider {
+  describe(): AdapterDescriptor<AutoReviewCapabilities>;
+  review(request: AutoReviewRequest, context: AdapterContext): Promise<AutoReviewResult>;
 }

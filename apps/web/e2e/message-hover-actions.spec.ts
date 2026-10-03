@@ -1,6 +1,15 @@
 import { expect, type Locator, type Page, type Route, test } from "@playwright/test";
 import { captureScreenshot, completeOnboarding, signup } from "./helpers";
 
+/** Submit from the Send control so an in-flight prior send cannot swallow Enter. */
+async function sendComposerMessage(page: Page, composer: Locator, text: string) {
+  await composer.fill(text);
+  const send = page.getByRole("button", { name: "Send", exact: true });
+  await expect(send).toBeEnabled();
+  await send.click();
+  await expect(composer).toHaveValue("");
+}
+
 async function revealHoverRail(row: Locator): Promise<Locator> {
   const rail = row.getByTestId("message-hover-rail");
   await expect
@@ -95,8 +104,7 @@ test("message hover shows beside-bubble actions; reply links to parent", async (
   const replyText = `hover-reply-${stamp}`;
   const composer = page.getByRole("combobox", { name: /^Message/ });
   await expect(composer).toBeVisible();
-  await composer.fill(parentText);
-  await composer.press("Enter");
+  await sendComposerMessage(page, composer, parentText);
 
   const parentRow = transcript.locator(`[data-message-id]`).filter({ hasText: parentText }).first();
   await expect(parentRow).toBeVisible({ timeout: 20_000 });
@@ -145,8 +153,7 @@ test("message hover shows beside-bubble actions; reply links to parent", async (
 
   // Long user bubble: rail stays ~6px beside the bubble edge, not the full row width.
   const longText = `hover-long-${stamp}-${"x".repeat(220)}`;
-  await composer.fill(longText);
-  await composer.press("Enter");
+  await sendComposerMessage(page, composer, longText);
   const longRow = transcript
     .locator(`[data-message-id]`)
     .filter({ hasText: longText.slice(0, 40) })
@@ -162,6 +169,7 @@ test("message hover shows beside-bubble actions; reply links to parent", async (
       return Math.abs(frameBox.x - (railBox.x + railBox.width));
     })
     .toBeLessThan(8);
+  await captureScreenshot(page, testInfo, "message-bubble-wide-desktop");
 
   // Time appears at the opposite row edge on hover, outside More.
   await revealHoverRail(parentRow);
@@ -242,8 +250,7 @@ test("message hover shows beside-bubble actions; reply links to parent", async (
   await expect(replyChip).toBeVisible();
   await expect(replyChip).toContainText(/Replying to/);
 
-  await composer.fill(replyText);
-  await composer.press("Enter");
+  await sendComposerMessage(page, composer, replyText);
   await expect(replyChip).toHaveCount(0);
 
   const replyRow = transcript.locator(`[data-message-id]`).filter({ hasText: replyText }).first();
@@ -274,8 +281,7 @@ test("reply preview jumps to parent outside the loaded page", async ({ page }) =
   const replyText = `page-reply-${stamp}`;
   const composer = page.getByRole("combobox", { name: /^Message/ });
   await expect(composer).toBeVisible();
-  await composer.fill(parentText);
-  await composer.press("Enter");
+  await sendComposerMessage(page, composer, parentText);
 
   const transcript = page.getByTestId("transcript");
   const parentRow = transcript.locator(`[data-message-id]`).filter({ hasText: parentText }).first();
@@ -285,8 +291,7 @@ test("reply preview jumps to parent outside the loaded page", async ({ page }) =
 
   await parentRow.hover();
   await parentRow.getByRole("button", { name: "Reply" }).click();
-  await composer.fill(replyText);
-  await composer.press("Enter");
+  await sendComposerMessage(page, composer, replyText);
 
   const replyRow = transcript.locator(`[data-message-id]`).filter({ hasText: replyText }).first();
   await expect(replyRow).toBeVisible({ timeout: 20_000 });
@@ -372,7 +377,16 @@ test.describe("touch message actions", () => {
       .first();
     const rail = row.getByTestId("message-hover-rail");
     await expect(rail).toHaveCSS("opacity", "1");
-    await expect(rail.getByRole("button", { name: "Reply", exact: true })).toBeHidden();
+    await expect(rail.getByRole("button", { name: "Reply", exact: true })).toBeVisible();
+    // Touch puts the action row in-flow under the bubble, not beside it.
+    const botBubble = row.getByTestId("message-bot-bubble").first();
+    const bubbleBox = await botBubble.boundingBox();
+    const railBox = await rail.boundingBox();
+    expect(bubbleBox).not.toBeNull();
+    expect(railBox).not.toBeNull();
+    expect(railBox!.y).toBeGreaterThanOrEqual(bubbleBox!.y + bubbleBox!.height - 1);
+    expect(railBox!.x - bubbleBox!.x).toBeLessThan(8);
+    await captureScreenshot(page, testInfo, "message-actions-touch-row");
     await rail.getByRole("button", { name: "React", exact: true }).tap();
     await expect(page.getByRole("button", { name: "🎉", exact: true })).toBeVisible();
     await captureScreenshot(page, testInfo, "message-reaction-picker-touch");
@@ -387,7 +401,8 @@ test.describe("touch message actions", () => {
     await expect(row.getByTestId("message-hover-time")).toHaveText(/\d/);
     await expect(page.getByRole("menu").locator("time")).toHaveCount(0);
     await captureScreenshot(page, testInfo, "message-actions-touch-menu");
-    await page.getByRole("menuitem", { name: "Reply", exact: true }).tap();
+    await page.keyboard.press("Escape");
+    await rail.getByRole("button", { name: "Reply", exact: true }).tap();
     await expect(page.getByRole("button", { name: "Cancel reply" })).toBeVisible();
   });
 });

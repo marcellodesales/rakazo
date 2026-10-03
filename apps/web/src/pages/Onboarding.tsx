@@ -1,11 +1,25 @@
-import { Trans, useLingui } from "@lingui/react/macro";
+import { Plural, Trans, useLingui } from "@lingui/react/macro";
 import {
+  DEFAULT_MODEL_CONTEXT_WINDOW,
+  DEFAULT_MODEL_MAX_TOKENS,
   type IntegrationSetupState,
+  MAX_MODEL_CONTEXT_WINDOW,
+  MAX_MODEL_MAX_TOKENS,
   OPENAI_COMPATIBLE_PROVIDER_ID,
   openAiCompatibleConnectReady,
   openAiCompatibleProbeSuccessMessage,
+  parseModelContextWindow,
+  parseModelMaxImagesPerPrompt,
+  parseModelMaxTokens,
+  type ThinkingLevel,
 } from "@rakazo/contracts";
-import { createModelProbe, initialModelProbeState } from "@rakazo/core";
+import {
+  COMPATIBLE_THINKING_LEVELS,
+  clampCatalogThinkingLevel,
+  createModelProbe,
+  initialModelProbeState,
+  pickCatalogModelId,
+} from "@rakazo/core";
 import {
   Button,
   Input,
@@ -16,14 +30,18 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@rakazo/ui-web";
+import { Check, Copy } from "lucide-react";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { IntegrationSetup } from "../components/integrations/IntegrationSetup";
+import { useCopyText } from "../lib/copy-text";
 import type { ModelCatalogEntry } from "../lib/model-auth";
+import { thinkingLevelLabel } from "../lib/model-catalog";
 import { rpc } from "../lib/rpc";
 import { useModelOAuthSignIn } from "../lib/use-model-oauth-signin";
 
 const CUSTOM_MODEL_OPTION = "__rakazo_custom_model__";
+const DEFAULT_THINKING_LEVEL_OPTION = "__rakazo_default_thinking__";
 const FIRST_BOT_NAME = "Chief";
 const FIRST_BOT_SPAWN_KEY = "onboarding:first";
 const FIRST_BOT_LOCK = "rakazo:onboarding-first-bot";
@@ -104,26 +122,46 @@ export function OnboardingPage() {
   const [baseUrl, setBaseUrl] = useState("");
   const [reasoning, setReasoning] = useState(false);
   const [manualModelId, setManualModelId] = useState(false);
-  const [{ models: probeModels, baseUrl: probedBaseUrl, probing }, setProbe] =
-    useState(initialModelProbeState);
+  const [thinkingLevel, setThinkingLevel] = useState<ThinkingLevel | null>(null);
+  const [maxTokens, setMaxTokens] = useState(String(DEFAULT_MODEL_MAX_TOKENS));
+  const [contextWindow, setContextWindow] = useState(String(DEFAULT_MODEL_CONTEXT_WINDOW));
+  const [supportsImages, setSupportsImages] = useState(false);
+  const [maxImagesPerPrompt, setMaxImagesPerPrompt] = useState("");
+  const [{ models: probeModels, probing }, setProbe] = useState(initialModelProbeState);
   const [modelProbe] = useState(() => createModelProbe(setProbe));
   const resetOpenAiCompatibleProbe = modelProbe.reset;
   const createStartedRef = useRef(false);
+  const deploymentDefaultModelRef = useRef<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [codeCopied, copyOAuthCode] = useCopyText();
 
   const {
     oauth,
     pasteCode,
     setPasteCode,
     oauthPending,
+    popupBlocked,
     cancelOAuthAttempt,
     startSubscriptionSignIn,
     submitOAuthCode,
   } = useModelOAuthSignIn({
     onClearError: () => setError(null),
     onError: setError,
-    onFinished: () => {
+    onFinished: async () => {
+      // OAuth connect ignores thinkingLevel; persist the staged catalog choice.
+      const level = clampCatalogThinkingLevel(
+        thinkingLevel,
+        catalog.find((entry) => entry.provider === provider && entry.id === modelId)
+          ?.thinkingLevels,
+      );
+      if (level && provider !== OPENAI_COMPATIBLE_PROVIDER_ID && modelId) {
+        try {
+          await rpc.models.setDefault({ provider, modelId, thinkingLevel: level as ThinkingLevel });
+        } catch {
+          // The connection itself succeeded; the effort stays adjustable in Models.
+        }
+      }
       setStep(nextStepAfterModel(needsIntegrationSetup));
     },
   });
@@ -137,6 +175,7 @@ export function OnboardingPage() {
       .then(([me, models, integrations]) => {
         setIntegrationSetup(integrations);
         setCatalog(models);
+        deploymentDefaultModelRef.current = me.defaultModel;
         const preferred =
           models.find(
             (entry) => entry.provider === me.defaultProvider && entry.id === me.defaultModel,
@@ -170,13 +209,18 @@ export function OnboardingPage() {
 
   const selected = modelsForProvider.find((entry) => entry.id === modelId) ?? modelsForProvider[0];
   const isOpenAiCompatible = provider === OPENAI_COMPATIBLE_PROVIDER_ID;
+  // Effort levels for the staged catalog model — "off" stays out, matching the
+  // model settings and per-bot Thinking pickers.
+  const catalogThinkingLevels =
+    !isOpenAiCompatible && selected
+      ? (selected.thinkingLevels ?? []).filter((level) => level !== "off")
+      : [];
   const subscriptionSignIn = selected?.signIn !== undefined;
   const acceptsKey = selected?.auth !== "oauth";
   const signInLabel = selected?.oauthLabel ?? t`Sign in`;
   const openAiCompatibleReady = openAiCompatibleConnectReady({
     baseUrl,
     modelId,
-    probedBaseUrl,
   });
   const canSaveModel = Boolean(
     selected &&
@@ -193,6 +237,16 @@ export function OnboardingPage() {
   const modelItems = useMemo(
     () => modelsForProvider.map((entry) => ({ value: entry.id, label: entry.label })),
     [modelsForProvider],
+  );
+  const thinkingLevelItems = useMemo(
+    () => [
+      {
+        value: DEFAULT_THINKING_LEVEL_OPTION,
+        label: t`Default (${thinkingLevelLabel("medium")})`,
+      },
+      ...catalogThinkingLevels.map((level) => ({ value: level, label: thinkingLevelLabel(level) })),
+    ],
+    [catalogThinkingLevels, t],
   );
   const probeModelItems = useMemo(
     () => [
@@ -223,11 +277,16 @@ export function OnboardingPage() {
     setModelId(
       nextProvider === OPENAI_COMPATIBLE_PROVIDER_ID
         ? ""
-        : (catalog.find((item) => item.provider === nextProvider)?.id ?? ""),
+        : pickCatalogModelId(catalog, nextProvider, deploymentDefaultModelRef.current),
     );
     setBaseUrl("");
     setReasoning(false);
+    setThinkingLevel(null);
     setManualModelId(false);
+    setSupportsImages(false);
+    setMaxTokens(String(DEFAULT_MODEL_MAX_TOKENS));
+    setContextWindow(String(DEFAULT_MODEL_CONTEXT_WINDOW));
+    setMaxImagesPerPrompt("");
     resetOpenAiCompatibleProbe();
     setError(null);
     setNotice(null);
@@ -245,6 +304,7 @@ export function OnboardingPage() {
         setModelId((current) => {
           const trimmed = current.trim();
           const next = trimmed || models[0] || "";
+          if (next !== trimmed) setThinkingLevel(null);
           // Stay in manual entry across re-probes so a typed id that matches a
           // discovered model cannot yank the freeform field back to the Select.
           setManualModelId(
@@ -259,16 +319,53 @@ export function OnboardingPage() {
     });
   }
 
+  function stagedThinkingLevel(): ThinkingLevel | null {
+    return clampCatalogThinkingLevel(
+      thinkingLevel,
+      isOpenAiCompatible ? (reasoning ? COMPATIBLE_THINKING_LEVELS : []) : selected?.thinkingLevels,
+    ) as ThinkingLevel | null;
+  }
+
   async function saveModel() {
     if (!canSaveModel) return;
     setError(null);
     try {
       if (isOpenAiCompatible) {
+        const parsedMaxImagesPerPrompt = parseModelMaxImagesPerPrompt(
+          maxImagesPerPrompt,
+          supportsImages,
+        );
+        if (supportsImages && maxImagesPerPrompt.trim() && parsedMaxImagesPerPrompt === undefined) {
+          setError(t`Enter a whole number from 1 to 1000 for the image limit.`);
+          return;
+        }
+        const maxImagesPerPromptInput =
+          supportsImages && !maxImagesPerPrompt.trim() ? null : parsedMaxImagesPerPrompt;
+
+        const parsedMaxTokens = parseModelMaxTokens(maxTokens);
+        if (parsedMaxTokens === undefined) {
+          setError(
+            t`Enter a whole number from 1 to ${MAX_MODEL_MAX_TOKENS} for maximum output tokens.`,
+          );
+          return;
+        }
+        const parsedContextWindow = parseModelContextWindow(contextWindow);
+        if (parsedContextWindow === undefined) {
+          setError(
+            t`Enter a whole number from 1 to ${MAX_MODEL_CONTEXT_WINDOW} for the context limit.`,
+          );
+          return;
+        }
         await rpc.models.connect({
           provider,
           baseUrl: baseUrl.trim(),
           modelId: modelId.trim(),
           reasoning,
+          thinkingLevel: stagedThinkingLevel(),
+          maxTokens: parsedMaxTokens,
+          contextWindow: parsedContextWindow,
+          supportsImages,
+          maxImagesPerPrompt: maxImagesPerPromptInput,
           apiKey: apiKey.trim() || undefined,
           label: selected?.providerName ?? provider,
         });
@@ -277,8 +374,15 @@ export function OnboardingPage() {
           provider,
           apiKey,
           modelId,
+          thinkingLevel: stagedThinkingLevel(),
           label: selected?.providerName ?? provider,
         });
+      }
+      // Catalog providers keep the staged effort on the saved model preference;
+      // openai-compatible already stored its level inside the endpoint config.
+      const level = stagedThinkingLevel();
+      if (level && !isOpenAiCompatible && modelId) {
+        await rpc.models.setDefault({ provider, modelId, thinkingLevel: level });
       }
       setStep(nextStepAfterModel(needsIntegrationSetup));
     } catch (err) {
@@ -287,10 +391,15 @@ export function OnboardingPage() {
   }
 
   function beginSelectedSubscriptionSignIn() {
+    if (!selected?.id) return;
     void startSubscriptionSignIn({
-      provider,
-      modelId,
-      label: selected?.providerName ?? provider,
+      provider: selected.provider,
+      modelId: selected.id,
+      thinkingLevel: clampCatalogThinkingLevel(
+        thinkingLevel,
+        selected.thinkingLevels,
+      ) as ThinkingLevel | null,
+      label: selected.providerName ?? selected.provider,
     });
   }
 
@@ -343,7 +452,10 @@ export function OnboardingPage() {
               </span>
               <Select
                 value={provider}
-                onValueChange={(value) => selectProvider(String(value))}
+                onValueChange={(value) => {
+                  if (typeof value !== "string" || !value) return;
+                  selectProvider(value);
+                }}
                 items={providerItems}
               >
                 <SelectTrigger aria-label={t`Provider`} className="mt-2 w-full">
@@ -390,7 +502,8 @@ export function OnboardingPage() {
                       <Select
                         value={modelId}
                         onValueChange={(value) => {
-                          const next = String(value);
+                          if (typeof value !== "string") return;
+                          const next = value;
                           if (next === CUSTOM_MODEL_OPTION) {
                             setManualModelId(true);
                             setModelId("");
@@ -443,9 +556,38 @@ export function OnboardingPage() {
                   </div>
                   <ModelThinkingOptions
                     reasoning={reasoning}
-                    onReasoningChange={setReasoning}
+                    onReasoningChange={(value) => {
+                      setReasoning(value);
+                      if (!value) setThinkingLevel(null);
+                    }}
                     advancedLabel={t`Advanced`}
                     thinkingLabel={t`Supports thinking`}
+                    thinkingLevel={thinkingLevel}
+                    onThinkingLevelChange={(value) =>
+                      setThinkingLevel(value as ThinkingLevel | null)
+                    }
+                    thinkingLevelOptions={[
+                      { value: "minimal", label: t`Minimal` },
+                      { value: "low", label: t`Low` },
+                      { value: "medium", label: t`Medium` },
+                      { value: "high", label: t`High` },
+                      { value: "xhigh", label: t`Extra high` },
+                      { value: "max", label: t`Max` },
+                    ]}
+                    thinkingLevelLabel={t`Reasoning effort`}
+                    thinkingLevelDefaultLabel={t`Default`}
+                    maxTokens={maxTokens}
+                    onMaxTokensChange={setMaxTokens}
+                    maxTokensLabel={t`Maximum output tokens`}
+                    contextWindow={contextWindow}
+                    onContextWindowChange={setContextWindow}
+                    contextWindowLabel={t`Context limit`}
+                    supportsImages={supportsImages}
+                    onSupportsImagesChange={setSupportsImages}
+                    imagesLabel={t`Supports images`}
+                    maxImagesPerPrompt={maxImagesPerPrompt}
+                    onMaxImagesPerPromptChange={setMaxImagesPerPrompt}
+                    maxImagesLabel={t`Maximum images per request`}
                   />
                 </>
               ) : (
@@ -456,10 +598,11 @@ export function OnboardingPage() {
                   <Select
                     value={selected?.id ?? modelId}
                     onValueChange={(value) => {
-                      const next = String(value);
-                      if (next === modelId) return;
+                      if (typeof value !== "string" || !value) return;
+                      if (value === modelId) return;
                       cancelOAuthAttempt();
-                      setModelId(next);
+                      setModelId(value);
+                      setThinkingLevel(null);
                     }}
                     items={modelItems}
                   >
@@ -474,6 +617,37 @@ export function OnboardingPage() {
                       ))}
                     </SelectContent>
                   </Select>
+                  {catalogThinkingLevels.length ? (
+                    <div className="mt-4 block">
+                      <span className="font-medium">
+                        <Trans>Thinking</Trans>
+                      </span>
+                      <Select
+                        value={thinkingLevel ?? DEFAULT_THINKING_LEVEL_OPTION}
+                        onValueChange={(value) => {
+                          const next = String(value);
+                          setThinkingLevel(
+                            next === DEFAULT_THINKING_LEVEL_OPTION ? null : (next as ThinkingLevel),
+                          );
+                        }}
+                        items={thinkingLevelItems}
+                      >
+                        <SelectTrigger aria-label={t`Thinking`} className="mt-2 w-full">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value={DEFAULT_THINKING_LEVEL_OPTION}>
+                            {t`Default (${thinkingLevelLabel("medium")})`}
+                          </SelectItem>
+                          {catalogThinkingLevels.map((level) => (
+                            <SelectItem key={level} value={level}>
+                              {thinkingLevelLabel(level)}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  ) : null}
                 </>
               )}
             </div>
@@ -484,18 +658,33 @@ export function OnboardingPage() {
                     {oauth.mode === "auth-url" ? (
                       <>
                         <p className="text-sm text-muted-foreground">
-                          <Trans>
-                            Finish signing in at{" "}
-                            <a
-                              href={oauth.verificationUri}
-                              target="_blank"
-                              rel="noreferrer"
-                              className="text-foreground underline"
-                            >
-                              {new URL(oauth.verificationUri).hostname}
-                            </a>
-                            . The final page may not load; paste its URL or code here.
-                          </Trans>
+                          {popupBlocked ? (
+                            <Trans>
+                              Open{" "}
+                              <a
+                                href={oauth.verificationUri}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="text-foreground underline"
+                              >
+                                {new URL(oauth.verificationUri).hostname}
+                              </a>{" "}
+                              to finish signing in.
+                            </Trans>
+                          ) : (
+                            <Trans>
+                              Finish signing in at{" "}
+                              <a
+                                href={oauth.verificationUri}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="text-foreground underline"
+                              >
+                                {new URL(oauth.verificationUri).hostname}
+                              </a>
+                              . The final page may not load; paste its URL or code here.
+                            </Trans>
+                          )}
                         </p>
                         <div className="mt-3 flex items-center gap-2">
                           <Input
@@ -514,32 +703,78 @@ export function OnboardingPage() {
                           </Button>
                         </div>
                         <p className="mt-2 text-sm text-muted-foreground">
-                          <Trans>Waiting for sign-in…</Trans>
+                          <Plural
+                            value={Math.ceil(oauth.expiresInSeconds / 60)}
+                            one="Waiting for sign-in — the link expires in about # minute."
+                            other="Waiting for sign-in — the link expires in about # minutes."
+                          />
                         </p>
                       </>
                     ) : (
                       <>
                         <p className="text-sm text-muted-foreground">
-                          <Trans>
-                            Enter this code at{" "}
-                            <a
-                              href={oauth.verificationUri}
-                              target="_blank"
-                              rel="noreferrer"
-                              className="text-foreground underline"
-                            >
-                              {oauth.verificationUri.replace(/^https:\/\//, "")}
-                            </a>
-                          </Trans>
+                          {popupBlocked ? (
+                            <Trans>
+                              Open{" "}
+                              <a
+                                href={oauth.verificationUri}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="text-foreground underline"
+                              >
+                                {oauth.verificationUri.replace(/^https:\/\//, "")}
+                              </a>{" "}
+                              and enter this code:
+                            </Trans>
+                          ) : (
+                            <Trans>
+                              A sign-in tab opened at{" "}
+                              <a
+                                href={oauth.verificationUri}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="text-foreground underline"
+                              >
+                                {oauth.verificationUri.replace(/^https:\/\//, "")}
+                              </a>
+                              . Enter this code there — this window keeps waiting:
+                            </Trans>
+                          )}
                         </p>
-                        <p className="mt-2 font-mono text-[22px] tracking-[0.2em] text-foreground">
-                          {oauth.userCode}
-                        </p>
+                        <div className="mt-2 flex items-center gap-3">
+                          <p className="font-mono text-[22px] tracking-[0.2em] text-foreground">
+                            {oauth.userCode}
+                          </p>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => copyOAuthCode(oauth.userCode)}
+                          >
+                            {codeCopied ? (
+                              <Check size={14} strokeWidth={1.8} aria-hidden="true" />
+                            ) : (
+                              <Copy size={14} strokeWidth={1.8} aria-hidden="true" />
+                            )}
+                            {codeCopied ? <Trans>Copied</Trans> : <Trans>Copy</Trans>}
+                          </Button>
+                        </div>
                         <p className="mt-2 text-sm text-muted-foreground">
-                          <Trans>Waiting for sign-in…</Trans>
+                          <Plural
+                            value={Math.ceil(oauth.expiresInSeconds / 60)}
+                            one="Waiting for sign-in — the code expires in about # minute."
+                            other="Waiting for sign-in — the code expires in about # minutes."
+                          />
                         </p>
                       </>
                     )}
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="mt-2 -ml-2 text-muted-foreground"
+                      onClick={() => cancelOAuthAttempt()}
+                    >
+                      <Trans>Cancel</Trans>
+                    </Button>
                   </div>
                 ) : (
                   <Button disabled={oauthPending} onClick={() => beginSelectedSubscriptionSignIn()}>

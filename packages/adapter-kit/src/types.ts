@@ -46,6 +46,26 @@ export interface AgentModelOAuthCredential {
   accountId?: string;
 }
 
+/**
+ * Why a stored OAuth credential is being dropped. `terminal-refresh-failure`
+ * means the provider permanently rejected the refresh token; `account-changed`
+ * means a refreshed token belongs to a different account than the stored one.
+ */
+export type ModelCredentialRetireReason = "terminal-refresh-failure" | "account-changed";
+
+/**
+ * Identity of the stored credential material whose refresh attempt triggered
+ * retirement. Implementations compare access, refresh, and expiry to the secret
+ * still on the credential row so a concurrently persisted newer credential —
+ * same row rewritten by a successful refresh, or a reconnect — is not deleted
+ * by the stale failure.
+ */
+export interface ModelCredentialFailedState {
+  access: string;
+  refresh: string;
+  expires: number;
+}
+
 export interface PortableFile {
   path: string;
   content: Uint8Array;
@@ -83,6 +103,13 @@ export interface ScreenRequest {
   controlToken?: string;
 }
 
+export interface TerminalRequest {
+  /** The active screen control token; a terminal exists only while the user holds control. */
+  controlToken: string;
+  /** Workspace-relative starting directory. */
+  cwd?: string;
+}
+
 export interface ScreenSession {
   url: string | null;
   mimeType: string;
@@ -105,7 +132,8 @@ export type ComputerAction =
   | { kind: "scroll"; direction: "up" | "down"; amount?: number }
   | { kind: "wait"; ms: number }
   | { kind: "open"; path: string }
-  | { kind: "launch"; application: string; uri?: string };
+  | { kind: "launch"; application: string; uri?: string }
+  | { kind: "focus"; application: string; uri?: string };
 
 export interface ComputerObservation {
   frameId: string;
@@ -147,6 +175,17 @@ export interface AgentToolExecutionResult {
   details: unknown;
 }
 
+/** Hooks for a tool call that can report output before it returns. */
+export interface AgentToolExecutionObserver {
+  /**
+   * A shell command has already produced output and is still running.
+   * Resolves with the final redacted result when the process exits.
+   */
+  onShellStillRunning?: (
+    completion: Promise<{ stdout: string; stderr: string; code: number }>,
+  ) => void;
+}
+
 /** Ephemeral completion data for audit hooks; result contents must be redacted before persistence. */
 export interface AgentToolCompletion {
   name: string;
@@ -182,6 +221,7 @@ export interface ConnectorTool {
   name: string;
   description: string;
   inputSchema: Record<string, unknown>;
+  /** Declared effect. `false` forces approval; `true` never relaxes the name-based gate. */
   readOnly?: boolean;
   /** In-process routing metadata. It is never exposed to the model. */
   route?: ConnectorRoute;
@@ -245,11 +285,17 @@ export interface MemorySearchResult {
   score: number;
 }
 
+/** A full-document save lost the race to another writer. The caller should read again. */
+export const MEMORY_REVISION_CONFLICT_ERROR =
+  "Shared memory changed since it was read. Read the latest version and save again.";
+
 export interface MemoryCommitRequest {
   scope: "bot" | "user";
   botId?: string;
   path: string;
   content: string;
+  /** When set, commit fails if the live document revision is no longer this value. */
+  expectedRevision?: number;
   sourceRunId?: string;
   sourceThreadId?: string;
 }
@@ -285,6 +331,19 @@ export interface SemanticMemoryResult {
   memory: string;
   score: number;
   updatedAt?: string;
+  /** Stable provider id when the backend supports citation / forget. */
+  id?: string;
+  /** Attribution string preserved from the memory backend. */
+  provenance?: string;
+  /** Provider entity/namespace the fact was recalled from, when scoped. */
+  entity?: string;
+}
+
+export interface SemanticMemoryForgetRequest {
+  id: string;
+  reason?: string;
+  /** Entity/namespace from a prior recall citation, when the backend scopes deletes. */
+  entity?: string;
 }
 
 export type SemanticMemoryResponse<T = void> =
@@ -312,6 +371,12 @@ export interface SemanticMemoryPurgeHistoryRequest {
   generations: number[];
 }
 
+export type SemanticMemoryForgetResponse = SemanticMemoryResponse<{
+  id: string;
+  expired: boolean;
+  reason: string | null;
+}>;
+
 export interface AgentInputImage {
   name: string;
   mimeType: "image/jpeg" | "image/png" | "image/webp" | "image/gif";
@@ -334,12 +399,26 @@ export interface AgentRunModel {
   baseUrl?: string;
   /** Whether this custom connection accepts standard reasoning_effort. */
   reasoning?: boolean;
+  /** Whether this custom connection accepts image input. */
+  acceptsImages?: boolean;
+  /** Maximum number of image inputs the model connection accepts in one request. */
+  maxImagesPerPrompt?: number;
+  /** Maximum completion tokens sent to the model endpoint. */
+  maxTokens?: number;
+  /** Context-window limit used when sizing prompts and completions. */
+  contextWindow?: number;
   /** Preferred thinking effort for reasoning models; clamped to the model’s supported set. */
   thinkingLevel?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | null;
   /** In-process OAuth credential from the encrypted store for this run. */
   oauth?: {
     credential: AgentModelOAuthCredential;
     persist?: (credential: AgentModelOAuthCredential) => Promise<void>;
+    /** Drop the stored credential after a terminal provider rejection. */
+    retire?: (
+      reason: ModelCredentialRetireReason,
+      detail?: string,
+      failed?: ModelCredentialFailedState,
+    ) => Promise<boolean | undefined>;
   };
 }
 
@@ -350,7 +429,13 @@ export interface AgentRunRequest {
   sourceMessageId?: string | null;
   prompt: string;
   instructions: string;
-  history: Array<{ id?: string; role: "user" | "assistant" | "system"; content: string }>;
+  history: Array<{
+    id?: string;
+    role: "user" | "assistant" | "system";
+    content: string;
+    /** Images attached to this message, hydrated only for recent user turns. */
+    images?: AgentInputImage[];
+  }>;
   currentTurnImages?: AgentInputImage[];
   tools: ConnectorTool[];
   model: AgentRunModel;
@@ -359,8 +444,8 @@ export interface AgentRunRequest {
   resumeFromCheckpoint?: string;
   script?: ScriptedTurn[];
   /**
-   * Bot-message wakes may finish with no text and no tools (FYI silence).
-   * When set, skip synthetic empty-turn fallbacks.
+   * FYI bot-message wakes and scheduled routines may finish with no text.
+   * When set, skip synthetic empty-turn fallbacks (including after tools).
    */
   allowSilentEmpty?: boolean;
   /** Contextual fallback when a non-silent run produces no written response. */
@@ -370,6 +455,7 @@ export interface AgentRunRequest {
     args: Record<string, unknown>,
     executionId: string,
     route?: ConnectorRoute,
+    observer?: AgentToolExecutionObserver,
   ) => Promise<unknown>;
   /** Called after a tool returns; implementations must not persist raw result contents. */
   onToolCompleted?: (completion: AgentToolCompletion) => Promise<void> | void;
@@ -403,7 +489,16 @@ export type AgentRuntimeEvent =
       actions?: Array<{ id: string; label: string }>;
     }
   | { type: "takeover"; reason: string }
-  | { type: "usage"; inputTokens: number; outputTokens: number; provider: string; model: string }
+  | {
+      type: "usage";
+      inputTokens: number;
+      outputTokens: number;
+      /** Cache hits and writes folded into inputTokens, kept apart so cost views can split them. */
+      cacheReadTokens: number;
+      cacheWriteTokens: number;
+      provider: string;
+      model: string;
+    }
   | { type: "checkpoint"; blob: string }
   | {
       type: "subagent";
@@ -449,6 +544,8 @@ export interface VoiceSynthesizeRequest {
   text: string;
   voiceId: string;
   apiKey: string;
+  /** Connection speech model. Fish uses this, then `FISH_TTS_MODEL`, then s2.1-pro. */
+  model?: string;
   signal?: AbortSignal;
 }
 
@@ -480,6 +577,8 @@ export type BackgroundJob = {
     payload: BackgroundJobPayloads[Name];
     availableAt?: Date;
     replaceKey?: string;
+    /** Cap retried executions; omit to use the job queue's default. */
+    maxAttempts?: number;
   };
 }[BackgroundJobName];
 
@@ -703,7 +802,13 @@ export type BrowserActKind = "click" | "fill" | "type";
 
 export type BrowserActStep =
   | { kind: "click"; ref: string }
-  | { kind: "fill" | "type"; ref: string; text: string };
+  | {
+      kind: "fill" | "type";
+      ref: string;
+      text: string;
+      /** Refuse the step unless the page is on this origin when it is applied. */
+      origin?: string;
+    };
 
 export interface BrowserActRequest {
   actions: BrowserActStep[];
@@ -778,4 +883,39 @@ export interface CloudAgentReplyRequest {
   prompt: string;
   images?: CloudAgentImage[];
   signal?: AbortSignal;
+}
+
+/**
+ * Optional auto-allow check for a consequential tool call. Core still runs when
+ * no hosted verifier is configured; the LLM judge is the default adapter.
+ */
+export interface AutoReviewCapabilities {
+  /** True when the adapter never leaves the process (tests / Playwright). */
+  offline?: boolean;
+  /** True when a hosted vendor key is not required. */
+  keyless?: boolean;
+}
+
+export type AutoReviewDecision = "pass" | "ask" | "error";
+
+export interface AutoReviewMatchingRule {
+  effect: string;
+  matchKind: string;
+  matchValue: string;
+}
+
+export interface AutoReviewRequest {
+  toolName: string;
+  connectorKind: string;
+  /** Caller must already redact secrets and sensitive keys. */
+  args: Record<string, unknown>;
+  userTask: string;
+  botDescription: string;
+  matchingRules: AutoReviewMatchingRule[];
+}
+
+export interface AutoReviewResult {
+  decision: AutoReviewDecision;
+  reason?: string;
+  model: string;
 }
